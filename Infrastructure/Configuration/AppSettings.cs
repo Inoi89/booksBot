@@ -10,4 +10,5 @@ public sealed class AppSettings
     public string LiteDbPath { get; init; } = string.Empty;
     public string? StateDbPath { get; init; }
     public string? TempPath { get; init; }
+    public string? BlockedBookIdsPath { get; init; }
 }

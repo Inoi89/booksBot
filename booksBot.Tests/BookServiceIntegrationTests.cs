@@ -76,6 +76,83 @@ public sealed class BookServiceIntegrationTests : IDisposable
         Assert.Equal("Империя храмов", (await service.GetBookAsync("806581"))?.Title);
     }
 
+    [Fact]
+    public async Task ExactIdBlocklist_HidesOnlyTheSelectedBookAcrossEveryReadPath()
+    {
+        Directory.CreateDirectory(_root);
+        var inpxPath = Path.Combine(_root, "collection.inpx");
+        var archivePath = Path.Combine(_root, "fb2-806000-806999.zip");
+        var blocklistPath = Path.Combine(_root, "blocked-book-ids.txt");
+        CreateInpx(inpxPath);
+        CreateBookArchive(archivePath);
+        await File.WriteAllLinesAsync(blocklistPath, ["806581 # exact ID only"]);
+
+        var service = CreateService(inpxPath, blocklistPath);
+        await service.LoadCollectionAsync();
+
+        Assert.Empty((await service.SearchAsync("Империя храмов")).Books);
+        Assert.Equal("806582", Assert.Single((await service.SearchAsync("Путь защитника")).Books).LibId);
+        Assert.Null(await service.GetBookAsync("806581"));
+        Assert.NotNull(await service.GetBookAsync("806582"));
+        Assert.Null(await service.GetTelegramFileIdAsync("806581"));
+        await Assert.ThrowsAsync<BookUnavailableException>(() => service.PrepareBookFileAsync("806581"));
+        await Assert.ThrowsAsync<BookUnavailableException>(() => service.GetBookPreviewAsync("806581"));
+
+        for (var attempt = 0; attempt < 30; attempt++)
+        {
+            Assert.NotEqual("806581", (await service.GetRandomBookAsync())?.LibId);
+        }
+    }
+
+    [Fact]
+    public async Task BlocklistBuilder_BlocksOnlyExactTitleWithExplicitCatalogAuthor()
+    {
+        Directory.CreateDirectory(_root);
+        var inpxPath = Path.Combine(_root, "collection.inpx");
+        var archivePath = Path.Combine(_root, "fb2-806000-806999.zip");
+        var sourcePath = Path.Combine(_root, "rkn.csv");
+        var outputPath = Path.Combine(_root, "blocked-book-ids.txt");
+        var reportPath = Path.Combine(_root, "blocked-book-report.tsv");
+        CreateInpx(inpxPath);
+        CreateBookArchive(archivePath);
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+        await File.WriteAllTextAsync(
+            sourcePath,
+            "#;Материал;Дата\n"
+            + "10;\"Книга \"\"Империя храмов\"\", автор - Касса Маркуса, решение суда;\";\n"
+            + "11;\"Книга \"\"Путь защитника\"\", автор - Совсем Другой, решение суда;\";\n"
+            + "12;\"Книга \"\"Несуществующий заголовок\"\", автор - Касс Маркус;\";\n"
+            + "13;\"Книги Касса Маркуса: \"\"Несуществующий заголовок\"\"; \"\"Путь защитника\"\";\";\n",
+            Encoding.GetEncoding(1251));
+
+        var service = CreateService(inpxPath, outputPath);
+        await service.LoadCollectionAsync();
+        var result = await service.BuildBlocklistAsync(sourcePath, outputPath, reportPath);
+
+        Assert.Equal(4, result.SourceMaterialCount);
+        Assert.Equal(2, result.ExactCatalogMatchCount);
+        Assert.Equal(2, result.BlockedBookCount);
+        Assert.Equal(1, result.ReviewMatchCount);
+        Assert.Contains(File.ReadAllLines(outputPath), line => line.StartsWith("806581 #", StringComparison.Ordinal));
+        Assert.Contains(File.ReadAllLines(outputPath), line => line.StartsWith("806582 #", StringComparison.Ordinal));
+        Assert.Contains("REVIEW\t11\tПуть защитника\t806582", await File.ReadAllTextAsync(reportPath));
+    }
+
+    private BookService CreateService(string inpxPath, string blocklistPath)
+    {
+        var settings = Options.Create(new AppSettings
+        {
+            BotToken = "test-token",
+            InpxCollectionPath = inpxPath,
+            ArchivesPath = _root,
+            LiteDbPath = Path.Combine(_root, "books.db"),
+            StateDbPath = Path.Combine(_root, "state.db"),
+            TempPath = Path.Combine(_root, "temp"),
+            BlockedBookIdsPath = blocklistPath
+        });
+        return new BookService(settings, NullLogger<BookService>.Instance);
+    }
+
     private static void CreateInpx(string path)
     {
         var records = new[]

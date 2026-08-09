@@ -315,6 +315,15 @@ public sealed class TelegramBotService : BackgroundService
     private async Task SendBookAsync(long chatId, string bookId, CancellationToken cancellationToken)
     {
         var book = await _bookService.GetBookAsync(bookId, cancellationToken);
+        if (book is null)
+        {
+            await _bot.SendMessage(
+                chatId,
+                "Эта книга недоступна в каталоге.",
+                cancellationToken: cancellationToken);
+            return;
+        }
+
         var caption = BotViewFactory.DownloadCaption(book);
         var cachedFileId = await _bookService.GetTelegramFileIdAsync(bookId, cancellationToken);
 
@@ -354,6 +363,14 @@ public sealed class TelegramBotService : BackgroundService
             {
                 await _bookService.SaveTelegramFileIdAsync(bookId, sentMessage.Document.FileId, cancellationToken);
             }
+        }
+        catch (BookUnavailableException exception)
+        {
+            _logger.LogInformation(exception, "Book {BookId} is blocked by the exact-ID registry.", bookId);
+            await _bot.SendMessage(
+                chatId,
+                "Эта книга недоступна в каталоге.",
+                cancellationToken: cancellationToken);
         }
         catch (FileNotFoundException exception)
         {
