@@ -11,9 +11,10 @@ namespace booksBot.Core.Services;
 
 public sealed class BookService : IBookService
 {
-    private const int CollectionSchemaVersion = 3;
+    private const int CollectionSchemaVersion = 4;
     private const int BatchSize = 5_000;
     private const int CandidateLimit = 2_000;
+    private const int MaxIndexedTokenLength = 128;
 
     private readonly AppSettings _settings;
     private readonly ILogger<BookService> _logger;
@@ -102,12 +103,28 @@ public sealed class BookService : IBookService
 
             using var database = OpenCollectionDatabase();
             var books = database.GetCollection<BookEntry>("books");
-            var fieldName = GetNormalizedFieldName(field);
             var anchorToken = tokens.OrderByDescending(token => token.Length).First();
+            var indexedAnchor = ToIndexedToken(anchorToken);
+            var tokenIndex = GetTokenIndexName(field);
 
-            var candidates = books
-                .Find(Query.Contains(fieldName, anchorToken), skip: 0, limit: CandidateLimit + 1)
+            var candidates = books.Find(
+                    Query.EQ(tokenIndex, indexedAnchor),
+                    skip: 0,
+                    limit: CandidateLimit + 1)
                 .ToList();
+
+            // Preserve partial-word search for short/incomplete user input. Exact token
+            // queries take the indexed path; this slower fallback is only needed when
+            // the user has not typed a complete indexed word yet.
+            if (candidates.Count == 0)
+            {
+                candidates = books
+                    .Find(
+                        Query.Contains(GetNormalizedFieldName(field), anchorToken),
+                        skip: 0,
+                        limit: CandidateLimit + 1)
+                    .ToList();
+            }
 
             var candidateSetWasTruncated = candidates.Count > CandidateLimit;
             if (candidateSetWasTruncated)
@@ -292,6 +309,11 @@ public sealed class BookService : IBookService
             bookCount += batch.Count;
         }
 
+        books.EnsureIndex("title_tokens", BsonExpression.Create("$.TitleTokens[*]"));
+        books.EnsureIndex("author_tokens", BsonExpression.Create("$.AuthorTokens[*]"));
+        books.EnsureIndex("series_tokens", BsonExpression.Create("$.SeriesTokens[*]"));
+        books.EnsureIndex("search_tokens", BsonExpression.Create("$.SearchTokens[*]"));
+
         database.GetCollection<CollectionMeta>("metadata").Upsert(new CollectionMeta
         {
             Id = 1,
@@ -329,6 +351,9 @@ public sealed class BookService : IBookService
         var titleNormalized = BookTextNormalizer.Normalize(title);
         var authorsNormalized = BookTextNormalizer.Normalize(string.Join(' ', authors.Select(author => author.DisplayName)));
         var seriesNormalized = BookTextNormalizer.Normalize(series);
+        var titleTokens = CreateIndexTokens(titleNormalized);
+        var authorTokens = CreateIndexTokens(authorsNormalized);
+        var seriesTokens = CreateIndexTokens(seriesNormalized);
 
         return new BookEntry
         {
@@ -343,7 +368,15 @@ public sealed class BookService : IBookService
             Authors = authors,
             AuthorsNormalized = authorsNormalized,
             SearchTextNormalized = string.Join(' ', new[] { titleNormalized, authorsNormalized, seriesNormalized }
-                .Where(value => !string.IsNullOrWhiteSpace(value)))
+                .Where(value => !string.IsNullOrWhiteSpace(value))),
+            TitleTokens = titleTokens,
+            AuthorTokens = authorTokens,
+            SeriesTokens = seriesTokens,
+            SearchTokens = titleTokens
+                .Concat(authorTokens)
+                .Concat(seriesTokens)
+                .Distinct(StringComparer.Ordinal)
+                .ToList()
         };
     }
 
@@ -412,6 +445,24 @@ public sealed class BookService : IBookService
         BookSearchField.Series => nameof(BookEntry.SeriesNormalized),
         _ => nameof(BookEntry.SearchTextNormalized)
     };
+
+    private static string GetTokenIndexName(BookSearchField field) => field switch
+    {
+        BookSearchField.Title => "title_tokens",
+        BookSearchField.Author => "author_tokens",
+        BookSearchField.Series => "series_tokens",
+        _ => "search_tokens"
+    };
+
+    private static List<string> CreateIndexTokens(string normalizedValue) => normalizedValue
+        .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Select(ToIndexedToken)
+        .Distinct(StringComparer.Ordinal)
+        .ToList();
+
+    private static string ToIndexedToken(string token) => token.Length <= MaxIndexedTokenLength
+        ? token
+        : token[..MaxIndexedTokenLength];
 
     private static string GetNormalizedField(BookEntry book, BookSearchField field) => field switch
     {

@@ -27,5 +27,9 @@ public sealed class BookEntry
     public List<AuthorPart> Authors { get; set; } = [];
     public string AuthorsNormalized { get; set; } = string.Empty;
     public string SearchTextNormalized { get; set; } = string.Empty;
+    public List<string> TitleTokens { get; set; } = [];
+    public List<string> AuthorTokens { get; set; } = [];
+    public List<string> SeriesTokens { get; set; } = [];
+    public List<string> SearchTokens { get; set; } = [];
     public string Genre { get; set; } = string.Empty;
 }

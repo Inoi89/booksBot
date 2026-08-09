@@ -46,6 +46,10 @@ public static class Program
             {
                 var result = await books.SearchAsync(probeQuery);
                 Console.WriteLine($"SEARCH_OK query={probeQuery} matches={result.MatchedCount} returned={result.Books.Count}");
+                foreach (var hit in result.Books.Take(5))
+                {
+                    Console.WriteLine($"SEARCH_HIT id={hit.LibId} title={hit.Title}");
+                }
             }
 
             if (probeBookId is not null)
