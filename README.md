@@ -10,7 +10,7 @@ The original working implementation is preserved as the `v1.0.0` tag. The curren
 - compact HTML book cards and in-place pagination;
 - callback sessions bound to both chat and user, with expiration;
 - direct FB2 download buttons and backward compatibility with `/download@<id>`;
-- optional embedded cover and annotation cards, loaded lazily and cached by Telegram `file_id`;
+- embedded cover and annotation cards, loaded when a book is selected and cached by Telegram `file_id`;
 - Telegram `file_id` cache, so a previously uploaded book is sent without reopening its archive;
 - one-time ZIP/7z range catalog instead of scanning the directory for every download;
 - normalized Russian search (`ё`/`е`, punctuation, word order);

@@ -217,9 +217,12 @@ public sealed class TelegramBotService : BackgroundService
 
                 var index = session.Result.Books.ToList().FindIndex(item => item.LibId == book.LibId);
                 var returnPage = Math.Max(0, index) / BotViewFactory.PageSize;
-                await EditViewAsync(
+                await SendBookCardAsync(
+                    chatId,
+                    book,
+                    session,
+                    returnPage,
                     callback.Message,
-                    BotViewFactory.BookDetails(session, book, returnPage),
                     cancellationToken);
                 return;
             }
@@ -371,31 +374,44 @@ public sealed class TelegramBotService : BackgroundService
             return;
         }
 
+        await SendBookCardAsync(
+            chatId,
+            book,
+            session: null,
+            returnPage: 0,
+            sourceMessage: null,
+            cancellationToken);
+    }
+
+    private async Task SendBookCardAsync(
+        long chatId,
+        BookEntry book,
+        SearchSession? session,
+        int returnPage,
+        Message? sourceMessage,
+        CancellationToken cancellationToken)
+    {
+        var fallbackCard = BotViewFactory.BookDetails(session, book, returnPage);
         await _bot.SendChatAction(chatId, ChatAction.UploadPhoto, cancellationToken: cancellationToken);
         BookPreview preview;
         try
         {
-            preview = await _bookService.GetBookPreviewAsync(bookId, cancellationToken);
+            preview = await _bookService.GetBookPreviewAsync(book.LibId, cancellationToken);
         }
         catch (XmlException exception)
         {
-            _logger.LogWarning(exception, "Could not parse FB2 preview metadata for {BookId}.", bookId);
-            await _bot.SendMessage(
-                chatId,
-                "В этой книге не получилось прочитать обложку и описание, но сам FB2 можно скачать.",
-                cancellationToken: cancellationToken);
-            return;
-        }
-        if (!preview.HasContent)
-        {
-            await _bot.SendMessage(
-                chatId,
-                "В этом FB2 нет встроенной обложки или краткого описания.",
-                cancellationToken: cancellationToken);
+            _logger.LogWarning(exception, "Could not parse FB2 preview metadata for {BookId}.", book.LibId);
+            await ReplaceOrSendViewAsync(sourceMessage, fallbackCard, chatId, cancellationToken);
             return;
         }
 
-        var card = BotViewFactory.PreviewCard(book, preview.Annotation);
+        if (!preview.HasContent)
+        {
+            await ReplaceOrSendViewAsync(sourceMessage, fallbackCard, chatId, cancellationToken);
+            return;
+        }
+
+        var card = BotViewFactory.PreviewCard(session, book, preview.Annotation, returnPage);
         if (!string.IsNullOrWhiteSpace(preview.TelegramCoverFileId))
         {
             try
@@ -407,18 +423,19 @@ public sealed class TelegramBotService : BackgroundService
                     parseMode: ParseMode.Html,
                     replyMarkup: card.Keyboard,
                     cancellationToken: cancellationToken);
+                await DeleteSourceMessageAsync(sourceMessage, cancellationToken);
                 return;
             }
             catch (ApiRequestException exception)
             {
-                _logger.LogWarning(exception, "Cached Telegram cover ID for {BookId} is invalid; uploading again.", bookId);
+                _logger.LogWarning(exception, "Cached Telegram cover ID for {BookId} is invalid; uploading again.", book.LibId);
                 await _bookService.SaveBookPreviewAsync(
-                    bookId,
+                    book.LibId,
                     preview.Annotation,
                     hasCover: true,
                     telegramCoverFileId: string.Empty,
                     cancellationToken);
-                preview = await _bookService.GetBookPreviewAsync(bookId, cancellationToken);
+                preview = await _bookService.GetBookPreviewAsync(book.LibId, cancellationToken);
             }
         }
 
@@ -432,34 +449,30 @@ public sealed class TelegramBotService : BackgroundService
                     : ".jpg";
                 var sentMessage = await _bot.SendPhoto(
                     chatId,
-                    new InputFileStream(stream, $"cover-{bookId}{extension}"),
+                    new InputFileStream(stream, $"cover-{book.LibId}{extension}"),
                     caption: card.Html,
                     parseMode: ParseMode.Html,
                     replyMarkup: card.Keyboard,
                     cancellationToken: cancellationToken);
                 var telegramFileId = sentMessage.Photo?.LastOrDefault()?.FileId ?? string.Empty;
                 await _bookService.SaveBookPreviewAsync(
-                    bookId,
+                    book.LibId,
                     preview.Annotation,
                     hasCover: true,
                     telegramFileId,
                     cancellationToken);
+                await DeleteSourceMessageAsync(sourceMessage, cancellationToken);
                 return;
             }
             catch (ApiRequestException exception)
             {
-                _logger.LogWarning(exception, "Could not upload the embedded cover for {BookId}.", bookId);
+                _logger.LogWarning(exception, "Could not upload the embedded cover for {BookId}.", book.LibId);
             }
         }
 
-        await _bot.SendMessage(
-            chatId,
-            card.Html,
-            parseMode: ParseMode.Html,
-            replyMarkup: card.Keyboard,
-            cancellationToken: cancellationToken);
+        await ReplaceOrSendViewAsync(sourceMessage, card, chatId, cancellationToken);
         await _bookService.SaveBookPreviewAsync(
-            bookId,
+            book.LibId,
             preview.Annotation,
             hasCover: false,
             telegramCoverFileId: string.Empty,
@@ -475,7 +488,7 @@ public sealed class TelegramBotService : BackgroundService
             return;
         }
 
-        await SendViewAsync(chatId, BotViewFactory.BookDetails(null, book), cancellationToken);
+        await SendBookCardAsync(chatId, book, null, 0, null, cancellationToken);
     }
 
     private async Task EditRandomBookAsync(Message message, CancellationToken cancellationToken)
@@ -486,7 +499,7 @@ public sealed class TelegramBotService : BackgroundService
             return;
         }
 
-        await EditViewAsync(message, BotViewFactory.BookDetails(null, book), cancellationToken);
+        await SendBookCardAsync(message.Chat.Id, book, null, 0, message, cancellationToken);
     }
 
     private Task SendViewAsync(long chatId, BotView view, CancellationToken cancellationToken) => _bot.SendMessage(
@@ -498,6 +511,13 @@ public sealed class TelegramBotService : BackgroundService
 
     private async Task EditViewAsync(Message message, BotView view, CancellationToken cancellationToken)
     {
+        if (message.Text is null)
+        {
+            await DeleteSourceMessageAsync(message, cancellationToken);
+            await SendViewAsync(message.Chat.Id, view, cancellationToken);
+            return;
+        }
+
         try
         {
             await _bot.EditMessageText(
@@ -511,6 +531,31 @@ public sealed class TelegramBotService : BackgroundService
         catch (ApiRequestException exception) when (exception.Message.Contains("message is not modified", StringComparison.OrdinalIgnoreCase))
         {
             // Double taps on navigation buttons are harmless.
+        }
+    }
+
+    private Task ReplaceOrSendViewAsync(
+        Message? sourceMessage,
+        BotView view,
+        long chatId,
+        CancellationToken cancellationToken) => sourceMessage is null
+        ? SendViewAsync(chatId, view, cancellationToken)
+        : EditViewAsync(sourceMessage, view, cancellationToken);
+
+    private async Task DeleteSourceMessageAsync(Message? sourceMessage, CancellationToken cancellationToken)
+    {
+        if (sourceMessage is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _bot.DeleteMessage(sourceMessage.Chat.Id, sourceMessage.Id, cancellationToken);
+        }
+        catch (ApiRequestException exception)
+        {
+            _logger.LogDebug(exception, "Could not remove replaced BookBot message {MessageId}.", sourceMessage.Id);
         }
     }
 

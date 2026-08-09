@@ -36,6 +36,26 @@ public sealed class BotViewFactoryTests
         Assert.DoesNotContain(rows.SelectMany(row => row), button => button.Text.Contains("Понедельник"));
     }
 
+    [Fact]
+    public void PreviewCard_CombinesMetadataDescriptionAndNavigation()
+    {
+        var book = CreateBook("42", "Пикник на обочине", "Стругацкий", "Аркадий", "Натанович");
+        book.Series = "Мир Полудня";
+        book.SeriesOrder = 3;
+        var result = new BookSearchResult("Стругацкий", BookSearchField.All, [book], 1, false);
+        var session = new SearchSession("session2", 1, 2, result, DateTime.UtcNow.AddMinutes(1));
+
+        var card = BotViewFactory.PreviewCard(session, book, "Краткое содержание книги.");
+        var buttons = card.Keyboard.InlineKeyboard.SelectMany(row => row).Select(button => button.Text).ToArray();
+
+        Assert.Contains("Пикник на обочине", card.Html);
+        Assert.Contains("Мир Полудня", card.Html);
+        Assert.Contains("Краткое содержание книги.", card.Html);
+        Assert.Contains("⬇️ Скачать FB2", buttons);
+        Assert.Contains("↩️ К результатам", buttons);
+        Assert.DoesNotContain("Обложка и описание", buttons);
+    }
+
     private static BookEntry CreateBook(
         string id,
         string title,

@@ -39,7 +39,7 @@ public static class BotViewFactory
             <b>Как пользоваться BookBot</b>
 
             🔎 Просто напиши запрос — поиск пройдёт по названию, автору и серии.
-            📖 Нажми номер книги под результатами, чтобы открыть карточку.
+            📖 Нажми номер книги — откроется карточка с обложкой и описанием.
             ⬇️ Кнопка скачивания пришлёт FB2 прямо в чат.
 
             Команды:
@@ -163,7 +163,6 @@ public static class BotViewFactory
 
         var rows = new List<InlineKeyboardButton[]>
         {
-            new[] { InlineKeyboardButton.WithCallbackData("🖼 Обложка и описание", $"preview:{book.LibId}") },
             new[] { InlineKeyboardButton.WithCallbackData("⬇️ Скачать FB2", $"download:{book.LibId}") }
         };
 
@@ -202,24 +201,72 @@ public static class BotViewFactory
         return $"📖 <b>{Escape(book.Title)}</b>\n👤 {Escape(Authors(book))}";
     }
 
-    public static BotView PreviewCard(BookEntry book, string annotation)
+    public static BotView PreviewCard(
+        SearchSession? session,
+        BookEntry book,
+        string annotation,
+        int returnPage = 0)
     {
         var builder = new StringBuilder();
-        builder.Append("📖 <b>").Append(Escape(Truncate(book.Title, 180))).AppendLine("</b>");
-        builder.Append("👤 ").AppendLine(Escape(Truncate(Authors(book), 180)));
+        builder.Append("📖 <b>").Append(Escape(Truncate(book.Title, 170))).AppendLine("</b>");
+        builder.Append("👤 ").AppendLine(Escape(Truncate(Authors(book), 150)));
+
+        if (!string.IsNullOrWhiteSpace(book.Series))
+        {
+            builder.Append("📚 ").Append(Escape(Truncate(book.Series, 100)));
+            if (book.SeriesOrder.HasValue)
+            {
+                builder.Append(" · книга ").Append(book.SeriesOrder.Value);
+            }
+
+            builder.AppendLine();
+        }
 
         if (!string.IsNullOrWhiteSpace(annotation))
         {
             builder.AppendLine().AppendLine("📝 <b>Краткое описание</b>");
-            builder.Append(Escape(Truncate(annotation, 550)));
+            builder.AppendLine(Escape(Truncate(annotation, 430)));
         }
 
+        builder.AppendLine().Append("🆔 <code>").Append(Escape(book.LibId)).Append("</code>");
+
+        var rows = new List<InlineKeyboardButton[]>
+        {
+            new[] { InlineKeyboardButton.WithCallbackData("⬇️ Скачать FB2", $"download:{book.LibId}") }
+        };
+
+        if (session is not null)
+        {
+            var related = new List<InlineKeyboardButton>();
+            if (book.Authors?.Count > 0)
+            {
+                related.Add(InlineKeyboardButton.WithCallbackData(
+                    "👤 Книги автора",
+                    $"related:{session.Id}:{book.LibId}:author"));
+            }
+
+            if (!string.IsNullOrWhiteSpace(book.Series))
+            {
+                related.Add(InlineKeyboardButton.WithCallbackData(
+                    "📚 Вся серия",
+                    $"related:{session.Id}:{book.LibId}:series"));
+            }
+
+            if (related.Count > 0)
+            {
+                rows.Add(related.ToArray());
+            }
+
+            rows.Add(new[]
+            {
+                InlineKeyboardButton.WithCallbackData("↩️ К результатам", $"page:{session.Id}:{returnPage}")
+            });
+        }
+
+        rows.Add(new[] { InlineKeyboardButton.WithCallbackData("🏠 В начало", "home") });
         return new BotView(
             builder.ToString(),
-            new InlineKeyboardMarkup(new[]
-            {
-                new[] { InlineKeyboardButton.WithCallbackData("⬇️ Скачать FB2", $"download:{book.LibId}") }
-            }));
+            new InlineKeyboardMarkup(rows));
     }
 
     public static string Authors(BookEntry book)
