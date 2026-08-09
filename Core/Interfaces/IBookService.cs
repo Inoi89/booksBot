@@ -13,6 +13,13 @@ public interface IBookService
     Task<BookEntry?> GetBookAsync(string bookId, CancellationToken cancellationToken = default);
     Task<BookEntry?> GetRandomBookAsync(CancellationToken cancellationToken = default);
     Task<BookDownload> PrepareBookFileAsync(string bookId, CancellationToken cancellationToken = default);
+    Task<BookPreview> GetBookPreviewAsync(string bookId, CancellationToken cancellationToken = default);
+    Task SaveBookPreviewAsync(
+        string bookId,
+        string annotation,
+        bool hasCover,
+        string telegramCoverFileId,
+        CancellationToken cancellationToken = default);
     Task<string?> GetTelegramFileIdAsync(string bookId, CancellationToken cancellationToken = default);
     Task SaveTelegramFileIdAsync(string bookId, string fileId, CancellationToken cancellationToken = default);
 }

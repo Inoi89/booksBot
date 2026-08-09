@@ -56,6 +56,16 @@ public sealed class BookServiceIntegrationTests : IDisposable
 
         Assert.Empty(Directory.EnumerateFiles(Path.Combine(_root, "temp"), "*.fb2"));
 
+        var preview = await service.GetBookPreviewAsync("806581");
+        Assert.Equal("Первая строка.\n\nВторая строка.", preview.Annotation);
+        Assert.Equal(new byte[] { 1, 2, 3, 4 }, preview.CoverBytes);
+        Assert.Equal("image/jpeg", preview.CoverContentType);
+
+        await service.SaveBookPreviewAsync("806581", preview.Annotation, true, "telegram-cover-id");
+        var cachedPreview = await service.GetBookPreviewAsync("806581");
+        Assert.Equal("telegram-cover-id", cachedPreview.TelegramCoverFileId);
+        Assert.Null(cachedPreview.CoverBytes);
+
         await service.SaveTelegramFileIdAsync("806581", "telegram-file-id");
         Assert.Equal("telegram-file-id", await service.GetTelegramFileIdAsync("806581"));
 
@@ -106,6 +116,23 @@ public sealed class BookServiceIntegrationTests : IDisposable
     {
         var entry = archive.CreateEntry($"{id}.fb2");
         using var writer = new StreamWriter(entry.Open(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        if (id == "806581")
+        {
+            writer.Write($"""
+                <FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0" xmlns:l="http://www.w3.org/1999/xlink">
+                  <description>
+                    <title-info>
+                      <book-title>{title}</book-title>
+                      <annotation><p>Первая строка.</p><p>Вторая строка.</p></annotation>
+                      <coverpage><image l:href="#cover.jpg" /></coverpage>
+                    </title-info>
+                  </description>
+                  <binary id="cover.jpg" content-type="image/jpeg">AQIDBA==</binary>
+                </FictionBook>
+                """);
+            return;
+        }
+
         writer.Write($"<FictionBook><description><title-info><book-title>{title}</book-title></title-info></description></FictionBook>");
     }
 

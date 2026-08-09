@@ -15,9 +15,11 @@ public static class Program
     {
         var probeBookId = GetOptionValue(args, "--probe-book");
         var probeQuery = GetOptionValue(args, "--probe-query");
+        var probePreviewId = GetOptionValue(args, "--probe-preview");
         var maintenanceMode = args.Contains("--index-only", StringComparer.OrdinalIgnoreCase)
             || probeBookId is not null
-            || probeQuery is not null;
+            || probeQuery is not null
+            || probePreviewId is not null;
 
         var builder = Host.CreateApplicationBuilder(args);
 
@@ -58,6 +60,14 @@ public static class Program
                     ?? throw new InvalidOperationException($"Book {probeBookId} is missing from the index.");
                 await using var download = await books.PrepareBookFileAsync(probeBookId);
                 Console.WriteLine($"BOOK_OK id={book.LibId} bytes={download.Length} title={book.Title}");
+            }
+
+            if (probePreviewId is not null)
+            {
+                var preview = await books.GetBookPreviewAsync(probePreviewId);
+                Console.WriteLine(
+                    $"PREVIEW_OK id={probePreviewId} annotation_chars={preview.Annotation.Length} "
+                    + $"cover_bytes={preview.CoverBytes?.Length ?? 0} cover_type={preview.CoverContentType ?? "none"}");
             }
 
             return;

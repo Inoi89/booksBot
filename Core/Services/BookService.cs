@@ -212,6 +212,60 @@ public sealed class BookService : IBookService
         }
     }
 
+    public async Task<BookPreview> GetBookPreviewAsync(
+        string bookId,
+        CancellationToken cancellationToken = default)
+    {
+        BookPreviewCacheEntry? cached;
+        using (var database = OpenStateDatabase())
+        {
+            cached = database.GetCollection<BookPreviewCacheEntry>("book_previews").FindById(bookId);
+        }
+
+        if (cached is not null && (!cached.HasCover || !string.IsNullOrWhiteSpace(cached.TelegramCoverFileId)))
+        {
+            return new BookPreview(
+                cached.Annotation ?? string.Empty,
+                cached.TelegramCoverFileId,
+                null,
+                null);
+        }
+
+        await using var download = await PrepareBookFileAsync(bookId, cancellationToken);
+        await using var stream = download.OpenRead();
+        var preview = Fb2PreviewParser.Parse(stream);
+        if (!preview.HasCover)
+        {
+            await SaveBookPreviewAsync(
+                bookId,
+                preview.Annotation,
+                hasCover: false,
+                telegramCoverFileId: string.Empty,
+                cancellationToken);
+        }
+
+        return preview;
+    }
+
+    public Task SaveBookPreviewAsync(
+        string bookId,
+        string annotation,
+        bool hasCover,
+        string telegramCoverFileId,
+        CancellationToken cancellationToken = default) => Task.Run(() =>
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        using var database = OpenStateDatabase();
+        database.GetCollection<BookPreviewCacheEntry>("book_previews").Upsert(new BookPreviewCacheEntry
+        {
+            BookId = bookId,
+            Annotation = annotation,
+            HasCover = hasCover,
+            TelegramCoverFileId = telegramCoverFileId,
+            UpdatedAtUtc = DateTime.UtcNow
+        });
+    }, cancellationToken);
+
     public Task<string?> GetTelegramFileIdAsync(string bookId, CancellationToken cancellationToken = default) => Task.Run(() =>
     {
         cancellationToken.ThrowIfCancellationRequested();

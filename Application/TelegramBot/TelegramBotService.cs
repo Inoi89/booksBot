@@ -2,6 +2,7 @@ using booksBot.Core.Interfaces;
 using booksBot.Core.Models;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using System.Xml;
 using Telegram.Bot;
 using Telegram.Bot.Exceptions;
 using Telegram.Bot.Polling;
@@ -36,6 +37,13 @@ public sealed class TelegramBotService : BackgroundService
         await _bookService.LoadCollectionAsync(stoppingToken);
 
         var me = await _bot.GetMe(stoppingToken);
+        await _bot.SetMyName("BookBot", cancellationToken: stoppingToken);
+        await _bot.SetMyShortDescription(
+            "Поиск книг в домашней библиотеке и загрузка FB2.",
+            cancellationToken: stoppingToken);
+        await _bot.SetMyDescription(
+            "Ищу книги по названию, автору или серии, показываю обложки и отправляю FB2.",
+            cancellationToken: stoppingToken);
         await _bot.SetMyCommands(
             [
                 new BotCommand("start", "Открыть главное меню"),
@@ -54,7 +62,7 @@ public sealed class TelegramBotService : BackgroundService
             },
             stoppingToken);
 
-        _logger.LogInformation("BoxBot V2 started as @{Username}.", me.Username);
+        _logger.LogInformation("BookBot V2 started as @{Username}.", me.Username);
         await Task.Delay(Timeout.Infinite, stoppingToken);
     }
 
@@ -150,6 +158,13 @@ public sealed class TelegramBotService : BackgroundService
 
         try
         {
+            if (data.StartsWith("preview:", StringComparison.Ordinal))
+            {
+                await _bot.AnswerCallbackQuery(callback.Id, "Достаю обложку и описание…", cancellationToken: cancellationToken);
+                await SendPreviewAsync(chatId, data["preview:".Length..], cancellationToken);
+                return;
+            }
+
             if (data.StartsWith("download:", StringComparison.Ordinal))
             {
                 await _bot.AnswerCallbackQuery(callback.Id, "Готовлю FB2…", cancellationToken: cancellationToken);
@@ -352,6 +367,110 @@ public sealed class TelegramBotService : BackgroundService
                 "Не смог найти FB2 в архивах. Я записал ошибку в журнал.",
                 cancellationToken: cancellationToken);
         }
+    }
+
+    private async Task SendPreviewAsync(long chatId, string bookId, CancellationToken cancellationToken)
+    {
+        var book = await _bookService.GetBookAsync(bookId, cancellationToken);
+        if (book is null)
+        {
+            await _bot.SendMessage(chatId, "Эта книга больше не найдена в индексе.", cancellationToken: cancellationToken);
+            return;
+        }
+
+        await _bot.SendChatAction(chatId, ChatAction.UploadPhoto, cancellationToken: cancellationToken);
+        BookPreview preview;
+        try
+        {
+            preview = await _bookService.GetBookPreviewAsync(bookId, cancellationToken);
+        }
+        catch (XmlException exception)
+        {
+            _logger.LogWarning(exception, "Could not parse FB2 preview metadata for {BookId}.", bookId);
+            await _bot.SendMessage(
+                chatId,
+                "В этой книге не получилось прочитать обложку и описание, но сам FB2 можно скачать.",
+                cancellationToken: cancellationToken);
+            return;
+        }
+        if (!preview.HasContent)
+        {
+            await _bot.SendMessage(
+                chatId,
+                "В этом FB2 нет встроенной обложки или краткого описания.",
+                cancellationToken: cancellationToken);
+            return;
+        }
+
+        var card = BotViewFactory.PreviewCard(book, preview.Annotation);
+        if (!string.IsNullOrWhiteSpace(preview.TelegramCoverFileId))
+        {
+            try
+            {
+                await _bot.SendPhoto(
+                    chatId,
+                    preview.TelegramCoverFileId,
+                    caption: card.Html,
+                    parseMode: ParseMode.Html,
+                    replyMarkup: card.Keyboard,
+                    cancellationToken: cancellationToken);
+                return;
+            }
+            catch (ApiRequestException exception)
+            {
+                _logger.LogWarning(exception, "Cached Telegram cover ID for {BookId} is invalid; uploading again.", bookId);
+                await _bookService.SaveBookPreviewAsync(
+                    bookId,
+                    preview.Annotation,
+                    hasCover: true,
+                    telegramCoverFileId: string.Empty,
+                    cancellationToken);
+                preview = await _bookService.GetBookPreviewAsync(bookId, cancellationToken);
+            }
+        }
+
+        if (preview.CoverBytes is { Length: > 0 } coverBytes)
+        {
+            try
+            {
+                await using var stream = new MemoryStream(coverBytes, writable: false);
+                var extension = preview.CoverContentType?.Equals("image/png", StringComparison.OrdinalIgnoreCase) == true
+                    ? ".png"
+                    : ".jpg";
+                var sentMessage = await _bot.SendPhoto(
+                    chatId,
+                    new InputFileStream(stream, $"cover-{bookId}{extension}"),
+                    caption: card.Html,
+                    parseMode: ParseMode.Html,
+                    replyMarkup: card.Keyboard,
+                    cancellationToken: cancellationToken);
+                var telegramFileId = sentMessage.Photo?.LastOrDefault()?.FileId ?? string.Empty;
+                await _bookService.SaveBookPreviewAsync(
+                    bookId,
+                    preview.Annotation,
+                    hasCover: true,
+                    telegramFileId,
+                    cancellationToken);
+                return;
+            }
+            catch (ApiRequestException exception)
+            {
+                _logger.LogWarning(exception, "Could not upload the embedded cover for {BookId}.", bookId);
+            }
+        }
+
+        await _bot.SendMessage(
+            chatId,
+            card.Html,
+            parseMode: ParseMode.Html,
+            replyMarkup: card.Keyboard,
+            cancellationToken: cancellationToken);
+        await _bookService.SaveBookPreviewAsync(
+            bookId,
+            preview.Annotation,
+            hasCover: false,
+            telegramCoverFileId: string.Empty,
+            cancellationToken);
     }
 
     private async Task SendRandomBookAsync(long chatId, CancellationToken cancellationToken)

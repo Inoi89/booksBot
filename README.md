@@ -1,6 +1,6 @@
-# BoxBot
+# BookBot
 
-BoxBot is a private Telegram catalog for a local INPX/FB2 collection. It searches by title, author, and series, then extracts the selected FB2 directly from ZIP or 7z archives.
+BookBot is a private Telegram catalog for a local INPX/FB2 collection. It searches by title, author, and series, then extracts the selected FB2 directly from ZIP or 7z archives.
 
 The original working implementation is preserved as the `v1.0.0` tag. The current branch contains the redesigned native Telegram V2 interface.
 
@@ -10,6 +10,7 @@ The original working implementation is preserved as the `v1.0.0` tag. The curren
 - compact HTML book cards and in-place pagination;
 - callback sessions bound to both chat and user, with expiration;
 - direct FB2 download buttons and backward compatibility with `/download@<id>`;
+- optional embedded cover and annotation cards, loaded lazily and cached by Telegram `file_id`;
 - Telegram `file_id` cache, so a previously uploaded book is sent without reopening its archive;
 - one-time ZIP/7z range catalog instead of scanning the directory for every download;
 - normalized Russian search (`ё`/`е`, punctuation, word order);
@@ -45,7 +46,7 @@ dotnet publish booksBot.csproj -c Release -r win-x64 --self-contained false
 Production data can be checked without starting Telegram polling:
 
 ```powershell
-dotnet booksBot.dll --probe-query "Касс Маркус" --probe-book 806581
+dotnet booksBot.dll --probe-query "Гарри Поттер Орден Феникса" --probe-book 114527 --probe-preview 114527
 ```
 
 The production Windows scheduled task launches the bot through

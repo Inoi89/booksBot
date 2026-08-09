@@ -14,14 +14,14 @@ public static class BotViewFactory
     public static BotView Welcome()
     {
         const string html = """
-            📚 <b>BoxBot</b>
+            📚 <b>BookBot</b>
 
             Отправь название книги, автора или серию — я поищу сразу везде.
 
             Например:
-            • <code>Касс Маркус</code>
-            • <code>Империя храмов</code>
-            • <code>Святоша</code>
+            • <code>Гарри Поттер Орден Феникса</code>
+            • <code>Аркадий Стругацкий</code>
+            • <code>Дюна</code>
             """;
 
         return new BotView(
@@ -36,7 +36,7 @@ public static class BotViewFactory
     public static BotView Help()
     {
         const string html = """
-            <b>Как пользоваться BoxBot</b>
+            <b>Как пользоваться BookBot</b>
 
             🔎 Просто напиши запрос — поиск пройдёт по названию, автору и серии.
             📖 Нажми на книгу, чтобы открыть карточку.
@@ -158,6 +158,7 @@ public static class BotViewFactory
 
         var rows = new List<InlineKeyboardButton[]>
         {
+            new[] { InlineKeyboardButton.WithCallbackData("🖼 Обложка и описание", $"preview:{book.LibId}") },
             new[] { InlineKeyboardButton.WithCallbackData("⬇️ Скачать FB2", $"download:{book.LibId}") }
         };
 
@@ -190,10 +191,30 @@ public static class BotViewFactory
     {
         if (book is null)
         {
-            return "📚 Книга из BoxBot";
+            return "📚 Книга из BookBot";
         }
 
         return $"📖 <b>{Escape(book.Title)}</b>\n👤 {Escape(Authors(book))}";
+    }
+
+    public static BotView PreviewCard(BookEntry book, string annotation)
+    {
+        var builder = new StringBuilder();
+        builder.Append("📖 <b>").Append(Escape(Truncate(book.Title, 180))).AppendLine("</b>");
+        builder.Append("👤 ").AppendLine(Escape(Truncate(Authors(book), 180)));
+
+        if (!string.IsNullOrWhiteSpace(annotation))
+        {
+            builder.AppendLine().AppendLine("📝 <b>Краткое описание</b>");
+            builder.Append(Escape(Truncate(annotation, 550)));
+        }
+
+        return new BotView(
+            builder.ToString(),
+            new InlineKeyboardMarkup(new[]
+            {
+                new[] { InlineKeyboardButton.WithCallbackData("⬇️ Скачать FB2", $"download:{book.LibId}") }
+            }));
     }
 
     public static string Authors(BookEntry book)

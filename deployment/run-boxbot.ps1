@@ -16,7 +16,7 @@ do {
 } while ([DateTime]::UtcNow -lt $deadline)
 
 if (-not $listener) {
-    throw 'BoxBot egress SOCKS listener is unavailable'
+    throw 'BookBot egress SOCKS listener is unavailable'
 }
 
 $env:HTTPS_PROXY = 'socks5://127.0.0.1:10888'
