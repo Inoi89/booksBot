@@ -98,7 +98,7 @@ public static class BotViewFactory
             .Select((book, index) => new[]
             {
                 InlineKeyboardButton.WithCallbackData(
-                    $"{page * PageSize + index + 1}. {Truncate(book.Title, 42)}",
+                    $"{page * PageSize + index + 1}. {Truncate(book.Title ?? "Без названия", 42)}",
                     $"book:{session.Id}:{book.LibId}")
             })
             .ToList();
@@ -164,7 +164,7 @@ public static class BotViewFactory
         if (session is not null)
         {
             var related = new List<InlineKeyboardButton>();
-            if (book.Authors.Count > 0)
+            if (book.Authors?.Count > 0)
             {
                 related.Add(InlineKeyboardButton.WithCallbackData("👤 Книги автора", $"related:{session.Id}:{book.LibId}:author"));
             }
@@ -198,7 +198,7 @@ public static class BotViewFactory
 
     public static string Authors(BookEntry book)
     {
-        var value = string.Join("; ", book.Authors.Select(author => author.DisplayName)
+        var value = string.Join("; ", (book.Authors ?? []).Select(author => author.DisplayName)
             .Where(author => !string.IsNullOrWhiteSpace(author)));
         return string.IsNullOrWhiteSpace(value) ? "Автор не указан" : value;
     }

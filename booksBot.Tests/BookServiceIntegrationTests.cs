@@ -43,6 +43,9 @@ public sealed class BookServiceIntegrationTests : IDisposable
         Assert.Equal("806581", empire.LibId);
         Assert.Equal("Святоша", empire.Series);
 
+        var missingSeries = await service.SearchAsync("Тестов", BookSearchField.Author);
+        Assert.Equal("806583", Assert.Single(missingSeries.Books).LibId);
+
         await using (var download = await service.PrepareBookFileAsync("806581"))
         await using (var stream = download.OpenRead())
         using (var reader = new StreamReader(stream, Encoding.UTF8))

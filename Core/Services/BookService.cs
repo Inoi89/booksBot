@@ -415,10 +415,10 @@ public sealed class BookService : IBookService
 
     private static string GetNormalizedField(BookEntry book, BookSearchField field) => field switch
     {
-        BookSearchField.Title => book.TitleNormalized,
-        BookSearchField.Author => book.AuthorsNormalized,
-        BookSearchField.Series => book.SeriesNormalized,
-        _ => book.SearchTextNormalized
+        BookSearchField.Title => book.TitleNormalized ?? string.Empty,
+        BookSearchField.Author => book.AuthorsNormalized ?? string.Empty,
+        BookSearchField.Series => book.SeriesNormalized ?? string.Empty,
+        _ => book.SearchTextNormalized ?? string.Empty
     };
 
     private static int Score(BookEntry book, string normalizedQuery, BookSearchField field)
@@ -428,17 +428,17 @@ public sealed class BookService : IBookService
 
         if (target.Equals(normalizedQuery, StringComparison.Ordinal)) score += 100;
         if (target.StartsWith(normalizedQuery, StringComparison.Ordinal)) score += 40;
-        if (book.TitleNormalized.Equals(normalizedQuery, StringComparison.Ordinal)) score += 80;
-        if (book.TitleNormalized.StartsWith(normalizedQuery, StringComparison.Ordinal)) score += 30;
-        if (book.AuthorsNormalized.Equals(normalizedQuery, StringComparison.Ordinal)) score += 60;
-        if (book.SeriesNormalized.Equals(normalizedQuery, StringComparison.Ordinal)) score += 40;
+        if (string.Equals(book.TitleNormalized, normalizedQuery, StringComparison.Ordinal)) score += 80;
+        if (book.TitleNormalized?.StartsWith(normalizedQuery, StringComparison.Ordinal) == true) score += 30;
+        if (string.Equals(book.AuthorsNormalized, normalizedQuery, StringComparison.Ordinal)) score += 60;
+        if (string.Equals(book.SeriesNormalized, normalizedQuery, StringComparison.Ordinal)) score += 40;
 
         return score;
     }
 
     private static string BuildDownloadFileName(BookEntry? book, string bookId)
     {
-        var author = book?.Authors.FirstOrDefault()?.DisplayName;
+        var author = book?.Authors?.FirstOrDefault()?.DisplayName;
         var displayName = string.Join(" — ", new[] { author, book?.Title }
             .Where(value => !string.IsNullOrWhiteSpace(value)));
         if (string.IsNullOrWhiteSpace(displayName))

@@ -252,7 +252,7 @@ public sealed class TelegramBotService : BackgroundService
                 var field = ParseField(parts[3]);
                 var query = field == BookSearchField.Series
                     ? book.Series
-                    : book.Authors.FirstOrDefault()?.DisplayName ?? string.Empty;
+                    : book.Authors?.FirstOrDefault()?.DisplayName ?? string.Empty;
                 if (!string.IsNullOrWhiteSpace(query))
                 {
                     await SearchAndShowAsync(chatId, userId, query, field, callback.Message, cancellationToken);
