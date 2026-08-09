@@ -9,6 +9,7 @@ using booksBot.Core.Models;
 using booksBot.Infrastructure.Configuration;
 using LiteDB;
 using Microsoft.Extensions.Options;
+using SharpCompress.Archives;
 using System.Threading.Tasks;
 using booksBot.Core.Services;
 
@@ -324,54 +325,67 @@ public class BookService : IBookService
     // Метод для получения FB2-файла книги
     public async Task<byte[]> GetBookFileAsync(string bookId)
     {
-        var archivesPath = _appSettings.ArchivesPath;
+        // Определяем архив, в котором должна находиться книга.
+        // Старые части коллекции хранятся в ZIP, новые — в 7z.
+        var archiveFilePath = GetArchiveFilePathForBook(bookId);
 
-        // Определяем архив, в котором должна находиться книга
-        var zipFileName = GetZipFileNameForBook(bookId);
-        var zipFilePath = Path.Combine(archivesPath, zipFileName);
-
-        if (!File.Exists(zipFilePath))
+        if (!File.Exists(archiveFilePath))
         {
-            throw new FileNotFoundException($"Archive file not found: {zipFilePath}");
+            throw new FileNotFoundException($"Archive file not found: {archiveFilePath}");
         }
 
-        // Извлекаем FB2 файл из архива
-        using (var archive = ZipFile.OpenRead(zipFilePath))
+        // SharpCompress одинаково читает ZIP и 7z, поэтому новые части
+        // коллекции не требуют предварительной распаковки или конвертации.
+        using (var archive = ArchiveFactory.OpenArchive(archiveFilePath))
         {
-            var entry = archive.GetEntry($"{bookId}.fb2");
+            var entry = archive.Entries.FirstOrDefault(entry =>
+                !entry.IsDirectory &&
+                string.Equals(
+                    Path.GetFileName(entry.Key),
+                    $"{bookId}.fb2",
+                    StringComparison.OrdinalIgnoreCase));
+
             if (entry == null)
             {
-                throw new FileNotFoundException($"FB2 file not found in archive: {bookId}.fb2 in {zipFileName}");
+                throw new FileNotFoundException(
+                    $"FB2 file not found in archive: {bookId}.fb2 in {Path.GetFileName(archiveFilePath)}");
             }
 
-            using (var stream = entry.Open())
+            using (var stream = entry.OpenEntryStream())
             using (var memoryStream = new MemoryStream())
             {
-                stream.CopyTo(memoryStream);
+                await stream.CopyToAsync(memoryStream);
                 return memoryStream.ToArray();
             }
         }
     }
 
-    // Определение имени архива, в котором находится книга
-    private string GetZipFileNameForBook(string bookId)
+    // Определение ZIP/7z-архива, в котором находится книга.
+    // При наличии обоих форматов предпочитаем ZIP для обратной совместимости.
+    private string GetArchiveFilePathForBook(string bookId)
     {
-        var bookIdNum = int.Parse(bookId);
-        var zipFiles = Directory.GetFiles(_appSettings.ArchivesPath, "*.zip");
-
-        foreach (var zipFile in zipFiles)
+        if (!int.TryParse(bookId, out var bookIdNum))
         {
-            var fileName = Path.GetFileNameWithoutExtension(zipFile);
-            var rangeParts = fileName.Split('-');
-            if (rangeParts.Length >= 3 && int.TryParse(rangeParts[1], out int rangeStart) && int.TryParse(rangeParts[2], out int rangeEnd))
+            throw new ArgumentException($"Invalid book ID: {bookId}", nameof(bookId));
+        }
+
+        foreach (var searchPattern in new[] { "*.zip", "*.7z" })
+        {
+            foreach (var archiveFilePath in Directory.EnumerateFiles(_appSettings.ArchivesPath, searchPattern))
             {
-                if (bookIdNum >= rangeStart && bookIdNum <= rangeEnd)
+                var fileName = Path.GetFileNameWithoutExtension(archiveFilePath);
+                var rangeParts = fileName.Split('-');
+                if (rangeParts.Length >= 3 &&
+                    int.TryParse(rangeParts[^2], out var rangeStart) &&
+                    int.TryParse(rangeParts[^1], out var rangeEnd) &&
+                    bookIdNum >= rangeStart &&
+                    bookIdNum <= rangeEnd)
                 {
-                    return Path.GetFileName(zipFile);
+                    return archiveFilePath;
                 }
             }
         }
 
-        throw new FileNotFoundException($"No archive found for book ID: {bookId}");
+        throw new FileNotFoundException($"No ZIP or 7z archive found for book ID: {bookId}");
     }
 }
