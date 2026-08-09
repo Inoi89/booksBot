@@ -37,13 +37,6 @@ public sealed class TelegramBotService : BackgroundService
         await _bookService.LoadCollectionAsync(stoppingToken);
 
         var me = await _bot.GetMe(stoppingToken);
-        await _bot.SetMyName("BookBot", cancellationToken: stoppingToken);
-        await _bot.SetMyShortDescription(
-            "Поиск книг в домашней библиотеке и загрузка FB2.",
-            cancellationToken: stoppingToken);
-        await _bot.SetMyDescription(
-            "Ищу книги по названию, автору или серии, показываю обложки и отправляю FB2.",
-            cancellationToken: stoppingToken);
         await _bot.SetMyCommands(
             [
                 new BotCommand("start", "Открыть главное меню"),
