@@ -41,3 +41,9 @@ dotnet restore booksBot.sln
 dotnet test booksBot.sln -c Release
 dotnet publish booksBot.csproj -c Release -r win-x64 --self-contained false
 ```
+
+Production data can be checked without starting Telegram polling:
+
+```powershell
+dotnet booksBot.dll --probe-query "Касс Маркус" --probe-book 806581
+```
