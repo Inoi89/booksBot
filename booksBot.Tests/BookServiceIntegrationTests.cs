@@ -47,7 +47,7 @@ public sealed class BookServiceIntegrationTests : IDisposable
         Assert.Equal("806583", Assert.Single(missingSeries.Books).LibId);
 
         var rankedAuthor = await service.SearchAsync("Аркадий Стругацкий");
-        Assert.Equal(new[] { "806585", "806584", "806586" }, rankedAuthor.Books.Select(book => book.LibId));
+        Assert.Equal(new[] { "806585", "806587", "806584", "806586" }, rankedAuthor.Books.Select(book => book.LibId));
 
         await using (var download = await service.PrepareBookFileAsync("806581"))
         await using (var stream = download.OpenRead())
@@ -85,7 +85,8 @@ public sealed class BookServiceIntegrationTests : IDisposable
             CreateRecord("Тестов,Оченьдлинный", new string('А', 2_000), string.Empty, "806583", string.Empty),
             CreateRecord("Бережной,Сергей", "Аркадий Стругацкий — инструкция", string.Empty, "806584", string.Empty),
             CreateRecord("Стругацкий,Аркадий,Натанович", "Пикник на обочине", string.Empty, "806585", string.Empty),
-            CreateRecord("Стругацкий,Борис:Шушпанов,Аркадий", "Журнал Если", string.Empty, "806586", string.Empty)
+            CreateRecord("Стругацкий,Борис:Шушпанов,Аркадий", "Журнал Если", string.Empty, "806586", string.Empty),
+            CreateRecord("Стругацкий,Аркадий,Натанович", "A Foreign Edition", string.Empty, "806587", string.Empty, "en")
         };
 
         using var archive = ZipFile.Open(path, ZipArchiveMode.Create);
@@ -97,7 +98,13 @@ public sealed class BookServiceIntegrationTests : IDisposable
         }
     }
 
-    private static string CreateRecord(string author, string title, string series, string id, string order)
+    private static string CreateRecord(
+        string author,
+        string title,
+        string series,
+        string id,
+        string order,
+        string language = "ru")
     {
         var parts = new string[13];
         parts[0] = author;
@@ -106,7 +113,7 @@ public sealed class BookServiceIntegrationTests : IDisposable
         parts[3] = series;
         parts[5] = id;
         parts[10] = order;
-        parts[12] = "ru";
+        parts[12] = language;
         return string.Join('\u0004', parts);
     }
 

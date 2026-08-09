@@ -132,9 +132,12 @@ public sealed class BookService : IBookService
                 candidates.RemoveAt(candidates.Count - 1);
             }
 
+            var preferRussian = ContainsCyrillic(normalizedQuery);
             var matches = candidates
                 .Where(book => tokens.All(token => GetNormalizedField(book, field).Contains(token, StringComparison.Ordinal)))
                 .OrderByDescending(book => Score(book, normalizedQuery, field))
+                .ThenByDescending(book => !preferRussian
+                    || string.Equals(book.Language, "ru", StringComparison.OrdinalIgnoreCase))
                 .ThenBy(book => book.TitleNormalized, StringComparer.Ordinal)
                 .ToList();
 
@@ -580,6 +583,9 @@ public sealed class BookService : IBookService
 
         return tokens.All(token => value.Contains(token, StringComparison.Ordinal)) ? contains : 0;
     }
+
+    private static bool ContainsCyrillic(string value) => value.Any(character =>
+        character is >= '\u0400' and <= '\u04FF');
 
     private static string BuildDownloadFileName(BookEntry? book, string bookId)
     {
