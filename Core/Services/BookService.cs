@@ -1,391 +1,502 @@
-﻿using System;
-using System.Collections.Generic;
-using System.IO;
 using System.IO.Compression;
-using System.Linq;
-using System.Text;
 using booksBot.Core.Interfaces;
 using booksBot.Core.Models;
 using booksBot.Infrastructure.Configuration;
 using LiteDB;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using SharpCompress.Archives;
-using System.Threading.Tasks;
-using booksBot.Core.Services;
 
-public class BookService : IBookService
+namespace booksBot.Core.Services;
+
+public sealed class BookService : IBookService
 {
-    private readonly AppSettings _appSettings;
-    private readonly string _dbPath;
-    private readonly IOutputService _logger;
+    private const int CollectionSchemaVersion = 2;
+    private const int BatchSize = 5_000;
+    private const int CandidateLimit = 2_000;
 
-    public BookService(IOptions<AppSettings> appSettings, IOutputService logger)
+    private readonly AppSettings _settings;
+    private readonly ILogger<BookService> _logger;
+    private readonly ArchiveCatalog _archiveCatalog;
+    private readonly string _databasePath;
+    private readonly string _stateDatabasePath;
+    private readonly string _tempPath;
+
+    public BookService(IOptions<AppSettings> settings, ILogger<BookService> logger)
     {
-        _appSettings = appSettings.Value;
-        _dbPath = _appSettings.LiteDbPath;
+        _settings = settings.Value;
         _logger = logger;
+        _databasePath = _settings.LiteDbPath;
+
+        var applicationDirectory = Path.GetDirectoryName(_databasePath) ?? AppContext.BaseDirectory;
+        _stateDatabasePath = string.IsNullOrWhiteSpace(_settings.StateDbPath)
+            ? Path.Combine(applicationDirectory, "boxbot-state.db")
+            : _settings.StateDbPath;
+        _tempPath = string.IsNullOrWhiteSpace(_settings.TempPath)
+            ? Path.Combine(applicationDirectory, "temp")
+            : _settings.TempPath;
+
+        _archiveCatalog = new ArchiveCatalog(_settings.ArchivesPath);
     }
 
-    // Метод для загрузки INPX коллекции и обновления базы данных
-    public async Task LoadCollectionAsync()
+    public async Task LoadCollectionAsync(CancellationToken cancellationToken = default)
     {
-        try
+        var sourcePath = _settings.InpxCollectionPath;
+        if (!File.Exists(sourcePath))
         {
-            using (var db = new LiteDatabase($"Filename={_dbPath}; Connection=shared"))
-            {
-                var inpxFilePath = _appSettings.InpxCollectionPath;
-
-                if (!File.Exists(inpxFilePath))
-                {
-                    throw new FileNotFoundException($"INPX file not found: {inpxFilePath}");
-                }
-
-                var collectionInfo = new FileInfo(inpxFilePath);
-                var booksCollection = db.GetCollection<BookEntry>("books");
-                var authorsCollection = db.GetCollection<AuthorEntry>("authors");
-
-                // Проверка на обновление INPX файла
-                var collectionMeta = db.GetCollection<CollectionMeta>("metadata").FindOne(x => x.Id == 1);
-                if (collectionMeta != null && collectionMeta.Size == collectionInfo.Length)
-                {
-                    await _logger.LogMessageAsync("Коллекция уже загружена. Используем кэшированную базу данных.");
-                    return;
-                }
-
-                await _logger.LogMessageAsync("Загрузка новой коллекции и индексация...");
-
-                // Очистка текущих коллекций
-                if (db.CollectionExists("books"))
-                    db.DropCollection("books");
-
-                if (db.CollectionExists("authors"))
-                    db.DropCollection("authors");
-
-                // Начинаем транзакцию
-                db.BeginTrans();
-                try
-                {
-                    // Хэшсет для отслеживания дубликатов LibId
-                    var processedLibIds = new HashSet<string>();
-
-                    using (var archive = ZipFile.OpenRead(inpxFilePath))
-                    {
-                        foreach (var entry in archive.Entries)
-                        {
-                            if (entry.FullName.EndsWith(".inp", StringComparison.OrdinalIgnoreCase))
-                            {
-                                using (var stream = entry.Open())
-                                using (var reader = new StreamReader(stream))
-                                {
-                                    string line;
-                                    while ((line = reader.ReadLine()) != null)
-                                    {
-                                        var parts = line.Split('');
-                                        if (parts.Length >= 7)
-                                        {
-                                            var libId = parts[5].Trim().Trim('"');
-
-                                            if (string.IsNullOrEmpty(libId))
-                                            {
-                                                // Пропускаем записи с пустым LibId
-                                                continue;
-                                            }
-
-                                            // Проверка на дубликаты в текущей загрузке
-                                            if (!processedLibIds.Add(libId))
-                                            {
-                                                // Дубликат обнаружен, пропускаем
-                                                continue;
-                                            }
-
-                                            var bookEntry = new BookEntry
-                                            {
-                                                LibId = libId,
-                                                Title = parts[2],
-                                                TitleNormalized = parts[2].ToLowerInvariant(),
-                                                Series = parts.Length > 3 ? parts[3] : null,
-                                                Genre = parts[1],
-                                                SeriesOrder = int.TryParse(parts.Length > 10 ? parts[10] : null, out var order) ? (int?)order : null,
-                                                Language = parts.Length > 12 ? parts[12] : null
-                                            };
-
-                                            booksCollection.Insert(bookEntry);
-
-                                            // Обработка авторов
-                                            var authors = parts[0].Split(':');
-                                            foreach (var authorStr in authors)
-                                            {
-                                                var authorParts = authorStr.Split(',');
-                                                var authorEntry = new AuthorEntry
-                                                {
-                                                    BookLibId = libId,
-                                                    LastName = authorParts.Length > 0 ? authorParts[0].Trim() : null,
-                                                    FirstName = authorParts.Length > 1 ? authorParts[1].Trim() : null,
-                                                    MiddleName = authorParts.Length > 2 ? authorParts[2].Trim() : null
-                                                };
-
-                                                authorsCollection.Insert(authorEntry);
-                                            }
-                                        }
-                                        else
-                                        {
-                                            await _logger.LogMessageAsync($"Строка имеет недостаточно частей: {line}");
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Сохраняем метаинформацию о коллекции
-                    if (collectionMeta == null)
-                    {
-                        collectionMeta = new CollectionMeta { Id = 1 };
-                        db.GetCollection<CollectionMeta>("metadata").Insert(collectionMeta);
-                    }
-                    collectionMeta.Size = collectionInfo.Length;
-                    db.GetCollection<CollectionMeta>("metadata").Update(collectionMeta);
-
-                    // Фиксируем транзакцию
-                    db.Commit();
-                }
-                catch (Exception ex)
-                {
-                    db.Rollback();
-                    await _logger.LogMessageAsync($"Ошибка при загрузке коллекции: {ex.Message}");
-                    throw;
-                }
-
-                // Создание индексов после вставки данных
-                await _logger.LogMessageAsync("Создание индексов... (может занять время)");
-                booksCollection.EnsureIndex(x => x.LibId, true);
-                booksCollection.EnsureIndex(x => x.TitleNormalized);
-                booksCollection.EnsureIndex(x => x.Series);
-                authorsCollection.EnsureIndex(x => x.BookLibId);
-                authorsCollection.EnsureIndex(x => x.LastName);
-                authorsCollection.EnsureIndex(x => x.FirstName);
-                authorsCollection.EnsureIndex(x => x.MiddleName);
-
-                await _logger.LogMessageAsync($"Загрузка завершена. Книг в коллекции: {booksCollection.Count()}");
-            }
+            throw new FileNotFoundException($"INPX file not found: {sourcePath}");
         }
-        catch (LiteException ex)
+
+        if (!Directory.Exists(_settings.ArchivesPath))
         {
-            await _logger.LogMessageAsync($"LiteDB Error: {ex.Message}");
+            throw new DirectoryNotFoundException($"Archives directory not found: {_settings.ArchivesPath}");
         }
-        catch (Exception ex)
+
+        EnsureParentDirectory(_databasePath);
+        EnsureParentDirectory(_stateDatabasePath);
+        Directory.CreateDirectory(_tempPath);
+        CleanupOldTempFiles();
+
+        var sourceInfo = new FileInfo(sourcePath);
+        if (IsCurrentCollection(sourceInfo))
         {
-            await _logger.LogMessageAsync($"Unexpected Error: {ex.Message}");
+            _archiveCatalog.Refresh();
+            _logger.LogInformation(
+                "Book collection is current. Loaded {ArchiveCount} ZIP/7z archive ranges.",
+                _archiveCatalog.Count);
+            return;
         }
+
+        var rebuildPath = $"{_databasePath}.rebuild";
+        TryDelete(rebuildPath);
+        TryDelete($"{rebuildPath}-log");
+
+        _logger.LogInformation("Building a new book index from {InpxPath}.", sourcePath);
+        await BuildCollectionAsync(sourceInfo, rebuildPath, cancellationToken);
+        ReplaceDatabase(rebuildPath);
+
+        _archiveCatalog.Refresh();
+        _logger.LogInformation(
+            "Book index is ready. Loaded {ArchiveCount} ZIP/7z archive ranges.",
+            _archiveCatalog.Count);
     }
 
-    // Метод для поиска книг по автору
-    public async Task<List<BookEntry>> SearchBooksByAuthorAsync(string authorName)
+    public Task<BookSearchResult> SearchAsync(
+        string query,
+        BookSearchField field = BookSearchField.All,
+        int limit = 200,
+        CancellationToken cancellationToken = default)
     {
-        using (var db = new LiteDatabase($"Filename={_dbPath}; Connection=shared"))
+        var normalizedQuery = BookTextNormalizer.Normalize(query);
+        var tokens = BookTextNormalizer.Tokens(query);
+        if (tokens.Length == 0)
         {
-            var authorsCollection = db.GetCollection<AuthorEntry>("authors");
-            var booksCollection = db.GetCollection<BookEntry>("books");
+            return Task.FromResult(new BookSearchResult(query, field, [], 0, false));
+        }
 
-            var searchParts = authorName.Split(' ', StringSplitOptions.RemoveEmptyEntries)
-                                        .Select(s => s.ToLowerInvariant())
-                                        .ToArray();
+        limit = Math.Clamp(limit, 1, 500);
 
-            var potentialAuthors = authorsCollection.Find(author =>
-                (author.FirstName != null && searchParts.Contains(author.FirstName.ToLowerInvariant())) ||
-                (author.LastName != null && searchParts.Contains(author.LastName.ToLowerInvariant())) ||
-                (author.MiddleName != null && searchParts.Contains(author.MiddleName.ToLowerInvariant()))
-            ).ToList();
+        return Task.Run(() =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
 
-            var matchingAuthors = potentialAuthors.Where(author =>
+            using var database = OpenCollectionDatabase();
+            var books = database.GetCollection<BookEntry>("books");
+            var fieldName = GetNormalizedFieldName(field);
+            var anchorToken = tokens.OrderByDescending(token => token.Length).First();
+
+            var candidates = books
+                .Find(Query.Contains(fieldName, anchorToken), skip: 0, limit: CandidateLimit + 1)
+                .ToList();
+
+            var candidateSetWasTruncated = candidates.Count > CandidateLimit;
+            if (candidateSetWasTruncated)
             {
-                var authorNames = new List<string>();
-                if (!string.IsNullOrEmpty(author.FirstName)) authorNames.Add(author.FirstName.ToLowerInvariant());
-                if (!string.IsNullOrEmpty(author.LastName)) authorNames.Add(author.LastName.ToLowerInvariant());
-                if (!string.IsNullOrEmpty(author.MiddleName)) authorNames.Add(author.MiddleName.ToLowerInvariant());
-
-                return searchParts.All(part => authorNames.Contains(part));
-            }).ToList();
-
-            var bookLibIds = matchingAuthors.Select(a => a.BookLibId).Distinct().ToList();
-            var resultBooks = booksCollection.Find(b => bookLibIds.Contains(b.LibId)).ToList();
-
-            foreach (var book in resultBooks)
-            {
-                var bookAuthors = authorsCollection.Find(a => a.BookLibId == book.LibId)
-                    .Select(a => new AuthorPart
-                    {
-                        FirstName = a.FirstName,
-                        LastName = a.LastName,
-                        MiddleName = a.MiddleName
-                    }).ToList();
-
-                book.Authors = bookAuthors;
+                candidates.RemoveAt(candidates.Count - 1);
             }
 
-            return resultBooks;
-        }
+            var matches = candidates
+                .Where(book => tokens.All(token => GetNormalizedField(book, field).Contains(token, StringComparison.Ordinal)))
+                .OrderByDescending(book => Score(book, normalizedQuery, field))
+                .ThenBy(book => book.Title, StringComparer.CurrentCultureIgnoreCase)
+                .ToList();
+
+            var visible = matches.Take(limit).ToArray();
+            var isTruncated = candidateSetWasTruncated || matches.Count > limit;
+            return new BookSearchResult(query.Trim(), field, visible, matches.Count, isTruncated);
+        }, cancellationToken);
     }
 
-
-    // Метод для поиска книг по названию
-    public async Task<List<BookEntry>> SearchBooksByTitleAsync(string title)
+    public Task<BookEntry?> GetBookAsync(string bookId, CancellationToken cancellationToken = default) => Task.Run(() =>
     {
-        using (var db = new LiteDatabase($"Filename={_dbPath}; Connection=shared"))
-        {
-            var booksCollection = db.GetCollection<BookEntry>("books");
-            var authorsCollection = db.GetCollection<AuthorEntry>("authors");
+        cancellationToken.ThrowIfCancellationRequested();
+        using var database = OpenCollectionDatabase();
+        return (BookEntry?)database.GetCollection<BookEntry>("books").FindById(bookId);
+    }, cancellationToken);
 
-            // Разбиваем запрос пользователя на слова и приводим к нижнему регистру
-            var searchWords = title.ToLowerInvariant().Trim().Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-
-            // Проверяем, есть ли слова для поиска
-            if (searchWords.Length == 0)
-            {
-                return new List<BookEntry>();
-            }
-
-            // Создаём список условий для каждого слова
-            var expressionParts = new List<string>();
-
-            foreach (var word in searchWords)
-            {
-                // Создаём строку выражения для нечувствительного к регистру поиска
-                var escapedWord = word.Replace("\"", "\\\""); // Экранируем кавычки
-                expressionParts.Add($"LOWER($.TitleNormalized) LIKE \"%{escapedWord}%\"");
-            }
-
-            // Объединяем условия с помощью оператора AND
-            var combinedExpression = string.Join(" AND ", expressionParts);
-
-            // Создаём финальное выражение
-            var expr = BsonExpression.Create(combinedExpression);
-
-            // Получаем потенциальные книги
-            var potentialBooks = booksCollection.Find(expr).ToList();
-
-            // Фильтруем книги в памяти, чтобы убедиться, что все поисковые слова являются отдельными словами в названии
-            var matchingBooks = potentialBooks.Where(b =>
-            {
-                var titleWords = b.TitleNormalized.Split(new[] { ' ', ',', '.', '!', '?', ';', ':', '-', '—', '«', '»', '(', ')' }, StringSplitOptions.RemoveEmptyEntries);
-                return searchWords.All(word => titleWords.Contains(word));
-            }).ToList();
-
-            // Заполняем авторов для каждой книги
-            foreach (var book in matchingBooks)
-            {
-                var bookAuthors = authorsCollection.Find(a => a.BookLibId == book.LibId)
-                    .Select(a => new AuthorPart
-                    {
-                        FirstName = a.FirstName,
-                        LastName = a.LastName,
-                        MiddleName = a.MiddleName
-                    }).ToList();
-
-                book.Authors = bookAuthors;
-            }
-
-            return matchingBooks;
-        }
-    }
-
-    public async Task<List<BookEntry>> SearchBooksBySeriesAsync(string seriesName)
+    public Task<BookEntry?> GetRandomBookAsync(CancellationToken cancellationToken = default) => Task.Run(() =>
     {
-        using (var db = new LiteDatabase($"Filename={_dbPath}; Connection=shared"))
+        cancellationToken.ThrowIfCancellationRequested();
+        using var database = OpenCollectionDatabase();
+        var books = database.GetCollection<BookEntry>("books");
+        var count = books.Count();
+        if (count == 0)
         {
-            var booksCollection = db.GetCollection<BookEntry>("books");
-            var authorsCollection = db.GetCollection<AuthorEntry>("authors");
-
-            // Приводим запрос пользователя к нижнему регистру и удаляем лишние пробелы
-            var searchQuery = seriesName.ToLowerInvariant().Trim();
-
-            // Находим книги, серия которых соответствует запросу
-            var matchingBooks = booksCollection.Find(b =>
-                b.Series != null && b.Series.ToLowerInvariant().Contains(searchQuery)).ToList();
-
-            // Заполняем авторов для каждой книги
-            foreach (var book in matchingBooks)
-            {
-                var bookAuthors = authorsCollection.Find(a => a.BookLibId == book.LibId)
-                    .Select(a => new AuthorPart
-                    {
-                        FirstName = a.FirstName,
-                        LastName = a.LastName,
-                        MiddleName = a.MiddleName
-                    }).ToList();
-
-                book.Authors = bookAuthors;
-            }
-
-            return matchingBooks;
-        }
-    }
-
-
-    // Метод для получения FB2-файла книги
-    public async Task<byte[]> GetBookFileAsync(string bookId)
-    {
-        // Определяем архив, в котором должна находиться книга.
-        // Старые части коллекции хранятся в ZIP, новые — в 7z.
-        var archiveFilePath = GetArchiveFilePathForBook(bookId);
-
-        if (!File.Exists(archiveFilePath))
-        {
-            throw new FileNotFoundException($"Archive file not found: {archiveFilePath}");
+            return null;
         }
 
-        // SharpCompress одинаково читает ZIP и 7z, поэтому новые части
-        // коллекции не требуют предварительной распаковки или конвертации.
-        using (var archive = ArchiveFactory.OpenArchive(archiveFilePath))
-        {
-            var entry = archive.Entries.FirstOrDefault(entry =>
-                !entry.IsDirectory &&
-                string.Equals(
-                    Path.GetFileName(entry.Key),
-                    $"{bookId}.fb2",
-                    StringComparison.OrdinalIgnoreCase));
+        return books.Find(Query.All(), Random.Shared.Next(count), 1).FirstOrDefault();
+    }, cancellationToken);
 
-            if (entry == null)
-            {
-                throw new FileNotFoundException(
-                    $"FB2 file not found in archive: {bookId}.fb2 in {Path.GetFileName(archiveFilePath)}");
-            }
-
-            using (var stream = entry.OpenEntryStream())
-            using (var memoryStream = new MemoryStream())
-            {
-                await stream.CopyToAsync(memoryStream);
-                return memoryStream.ToArray();
-            }
-        }
-    }
-
-    // Определение ZIP/7z-архива, в котором находится книга.
-    // При наличии обоих форматов предпочитаем ZIP для обратной совместимости.
-    private string GetArchiveFilePathForBook(string bookId)
+    public async Task<BookDownload> PrepareBookFileAsync(
+        string bookId,
+        CancellationToken cancellationToken = default)
     {
-        if (!int.TryParse(bookId, out var bookIdNum))
+        if (!int.TryParse(bookId, out var numericBookId))
         {
             throw new ArgumentException($"Invalid book ID: {bookId}", nameof(bookId));
         }
 
-        foreach (var searchPattern in new[] { "*.zip", "*.7z" })
+        var archivePath = _archiveCatalog.FindArchive(numericBookId);
+        var book = await GetBookAsync(bookId, cancellationToken);
+        var fileName = BuildDownloadFileName(book, bookId);
+        var tempFilePath = Path.Combine(_tempPath, $"{bookId}-{Guid.NewGuid():N}.fb2");
+
+        try
         {
-            foreach (var archiveFilePath in Directory.EnumerateFiles(_appSettings.ArchivesPath, searchPattern))
+            using var archive = ArchiveFactory.OpenArchive(archivePath);
+            var entry = archive.Entries.FirstOrDefault(candidate =>
+                !candidate.IsDirectory
+                && string.Equals(Path.GetFileName(candidate.Key), $"{bookId}.fb2", StringComparison.OrdinalIgnoreCase));
+
+            if (entry is null)
             {
-                var fileName = Path.GetFileNameWithoutExtension(archiveFilePath);
-                var rangeParts = fileName.Split('-');
-                if (rangeParts.Length >= 3 &&
-                    int.TryParse(rangeParts[^2], out var rangeStart) &&
-                    int.TryParse(rangeParts[^1], out var rangeEnd) &&
-                    bookIdNum >= rangeStart &&
-                    bookIdNum <= rangeEnd)
+                throw new FileNotFoundException(
+                    $"FB2 file not found in archive: {bookId}.fb2 in {Path.GetFileName(archivePath)}");
+            }
+
+            await using var input = entry.OpenEntryStream();
+            await using var output = new FileStream(
+                tempFilePath,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None,
+                bufferSize: 64 * 1024,
+                FileOptions.Asynchronous | FileOptions.SequentialScan);
+            await input.CopyToAsync(output, cancellationToken);
+            await output.FlushAsync(cancellationToken);
+
+            return new BookDownload(tempFilePath, fileName);
+        }
+        catch
+        {
+            TryDelete(tempFilePath);
+            throw;
+        }
+    }
+
+    public Task<string?> GetTelegramFileIdAsync(string bookId, CancellationToken cancellationToken = default) => Task.Run(() =>
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        using var database = OpenStateDatabase();
+        return database.GetCollection<TelegramFileCacheEntry>("telegram_files").FindById(bookId)?.FileId;
+    }, cancellationToken);
+
+    public Task SaveTelegramFileIdAsync(
+        string bookId,
+        string fileId,
+        CancellationToken cancellationToken = default) => Task.Run(() =>
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        using var database = OpenStateDatabase();
+        database.GetCollection<TelegramFileCacheEntry>("telegram_files").Upsert(new TelegramFileCacheEntry
+        {
+            BookId = bookId,
+            FileId = fileId,
+            UpdatedAtUtc = DateTime.UtcNow
+        });
+    }, cancellationToken);
+
+    private bool IsCurrentCollection(FileInfo sourceInfo)
+    {
+        if (!File.Exists(_databasePath))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var database = OpenCollectionDatabase();
+            var metadata = database.GetCollection<CollectionMeta>("metadata").FindById(1);
+            return metadata is not null
+                && metadata.SchemaVersion == CollectionSchemaVersion
+                && metadata.SourceSize == sourceInfo.Length
+                && metadata.SourceLastWriteUtcTicks == sourceInfo.LastWriteTimeUtc.Ticks
+                && metadata.BookCount > 0;
+        }
+        catch (Exception exception) when (exception is LiteException or IOException)
+        {
+            _logger.LogWarning(exception, "Existing book index is incompatible and will be rebuilt.");
+            return false;
+        }
+    }
+
+    private async Task BuildCollectionAsync(
+        FileInfo sourceInfo,
+        string targetPath,
+        CancellationToken cancellationToken)
+    {
+        var processedBookIds = new HashSet<string>(StringComparer.Ordinal);
+        var batch = new List<BookEntry>(BatchSize);
+        var bookCount = 0;
+
+        using var database = new LiteDatabase($"Filename={targetPath};Connection=direct");
+        var books = database.GetCollection<BookEntry>("books");
+
+        using var inpxArchive = ZipFile.OpenRead(sourceInfo.FullName);
+        foreach (var entry in inpxArchive.Entries.Where(entry => entry.FullName.EndsWith(".inp", StringComparison.OrdinalIgnoreCase)))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await using var stream = entry.Open();
+            using var reader = new StreamReader(stream, detectEncodingFromByteOrderMarks: true);
+
+            while (await reader.ReadLineAsync(cancellationToken) is { } line)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var book = ParseBook(line);
+                if (book is null || !processedBookIds.Add(book.LibId))
                 {
-                    return archiveFilePath;
+                    continue;
+                }
+
+                batch.Add(book);
+                if (batch.Count < BatchSize)
+                {
+                    continue;
+                }
+
+                books.InsertBulk(batch);
+                bookCount += batch.Count;
+                batch.Clear();
+
+                if (bookCount % 100_000 == 0)
+                {
+                    _logger.LogInformation("Indexed {BookCount:N0} books.", bookCount);
                 }
             }
         }
 
-        throw new FileNotFoundException($"No ZIP or 7z archive found for book ID: {bookId}");
+        if (batch.Count > 0)
+        {
+            books.InsertBulk(batch);
+            bookCount += batch.Count;
+        }
+
+        books.EnsureIndex(book => book.TitleNormalized);
+        books.EnsureIndex(book => book.AuthorsNormalized);
+        books.EnsureIndex(book => book.SeriesNormalized);
+        books.EnsureIndex(book => book.SearchTextNormalized);
+
+        database.GetCollection<CollectionMeta>("metadata").Upsert(new CollectionMeta
+        {
+            Id = 1,
+            SchemaVersion = CollectionSchemaVersion,
+            SourceSize = sourceInfo.Length,
+            SourceLastWriteUtcTicks = sourceInfo.LastWriteTimeUtc.Ticks,
+            BookCount = bookCount
+        });
+
+        database.Checkpoint();
+        _logger.LogInformation("Built a new index containing {BookCount:N0} books.", bookCount);
+    }
+
+    private static BookEntry? ParseBook(string line)
+    {
+        var parts = line.Split('\u0004');
+        if (parts.Length < 7)
+        {
+            return null;
+        }
+
+        var bookId = parts[5].Trim().Trim('"');
+        var title = parts[2].Trim();
+        if (string.IsNullOrWhiteSpace(bookId) || string.IsNullOrWhiteSpace(title))
+        {
+            return null;
+        }
+
+        var authors = parts[0]
+            .Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(ParseAuthor)
+            .Where(author => !string.IsNullOrWhiteSpace(author.DisplayName))
+            .ToList();
+        var series = parts.Length > 3 ? parts[3].Trim() : string.Empty;
+        var titleNormalized = BookTextNormalizer.Normalize(title);
+        var authorsNormalized = BookTextNormalizer.Normalize(string.Join(' ', authors.Select(author => author.DisplayName)));
+        var seriesNormalized = BookTextNormalizer.Normalize(series);
+
+        return new BookEntry
+        {
+            LibId = bookId,
+            Title = title,
+            TitleNormalized = titleNormalized,
+            Series = series,
+            SeriesNormalized = seriesNormalized,
+            Genre = parts[1].Trim(),
+            SeriesOrder = int.TryParse(parts.Length > 10 ? parts[10] : null, out var order) ? order : null,
+            Language = parts.Length > 12 ? parts[12].Trim() : string.Empty,
+            Authors = authors,
+            AuthorsNormalized = authorsNormalized,
+            SearchTextNormalized = string.Join(' ', new[] { titleNormalized, authorsNormalized, seriesNormalized }
+                .Where(value => !string.IsNullOrWhiteSpace(value)))
+        };
+    }
+
+    private static AuthorPart ParseAuthor(string value)
+    {
+        var parts = value.Split(',');
+        return new AuthorPart
+        {
+            LastName = parts.ElementAtOrDefault(0)?.Trim() ?? string.Empty,
+            FirstName = parts.ElementAtOrDefault(1)?.Trim() ?? string.Empty,
+            MiddleName = parts.ElementAtOrDefault(2)?.Trim() ?? string.Empty
+        };
+    }
+
+    private void ReplaceDatabase(string rebuildPath)
+    {
+        var backupPath = $"{_databasePath}.v1-backup";
+        TryDelete(backupPath);
+
+        try
+        {
+            if (File.Exists(_databasePath))
+            {
+                File.Replace(rebuildPath, _databasePath, backupPath, ignoreMetadataErrors: true);
+            }
+            else
+            {
+                File.Move(rebuildPath, _databasePath);
+            }
+
+            using var verificationDatabase = OpenCollectionDatabase();
+            var metadata = verificationDatabase.GetCollection<CollectionMeta>("metadata").FindById(1)
+                ?? throw new InvalidDataException("Rebuilt database metadata is missing.");
+            if (metadata.BookCount <= 0)
+            {
+                throw new InvalidDataException("Rebuilt database is empty.");
+            }
+
+            TryDelete(backupPath);
+        }
+        catch
+        {
+            if (File.Exists(backupPath))
+            {
+                TryDelete(_databasePath);
+                File.Move(backupPath, _databasePath);
+            }
+
+            throw;
+        }
+        finally
+        {
+            TryDelete(rebuildPath);
+            TryDelete($"{rebuildPath}-log");
+        }
+    }
+
+    private LiteDatabase OpenCollectionDatabase() => new($"Filename={_databasePath};Connection=shared");
+
+    private LiteDatabase OpenStateDatabase() => new($"Filename={_stateDatabasePath};Connection=shared");
+
+    private static string GetNormalizedFieldName(BookSearchField field) => field switch
+    {
+        BookSearchField.Title => nameof(BookEntry.TitleNormalized),
+        BookSearchField.Author => nameof(BookEntry.AuthorsNormalized),
+        BookSearchField.Series => nameof(BookEntry.SeriesNormalized),
+        _ => nameof(BookEntry.SearchTextNormalized)
+    };
+
+    private static string GetNormalizedField(BookEntry book, BookSearchField field) => field switch
+    {
+        BookSearchField.Title => book.TitleNormalized,
+        BookSearchField.Author => book.AuthorsNormalized,
+        BookSearchField.Series => book.SeriesNormalized,
+        _ => book.SearchTextNormalized
+    };
+
+    private static int Score(BookEntry book, string normalizedQuery, BookSearchField field)
+    {
+        var score = 0;
+        var target = GetNormalizedField(book, field);
+
+        if (target.Equals(normalizedQuery, StringComparison.Ordinal)) score += 100;
+        if (target.StartsWith(normalizedQuery, StringComparison.Ordinal)) score += 40;
+        if (book.TitleNormalized.Equals(normalizedQuery, StringComparison.Ordinal)) score += 80;
+        if (book.TitleNormalized.StartsWith(normalizedQuery, StringComparison.Ordinal)) score += 30;
+        if (book.AuthorsNormalized.Equals(normalizedQuery, StringComparison.Ordinal)) score += 60;
+        if (book.SeriesNormalized.Equals(normalizedQuery, StringComparison.Ordinal)) score += 40;
+
+        return score;
+    }
+
+    private static string BuildDownloadFileName(BookEntry? book, string bookId)
+    {
+        var author = book?.Authors.FirstOrDefault()?.DisplayName;
+        var displayName = string.Join(" — ", new[] { author, book?.Title }
+            .Where(value => !string.IsNullOrWhiteSpace(value)));
+        if (string.IsNullOrWhiteSpace(displayName))
+        {
+            displayName = bookId;
+        }
+
+        foreach (var invalidCharacter in Path.GetInvalidFileNameChars())
+        {
+            displayName = displayName.Replace(invalidCharacter, '_');
+        }
+
+        displayName = displayName.Length > 120 ? displayName[..120].Trim() : displayName;
+        return $"{displayName} [{bookId}].fb2";
+    }
+
+    private void CleanupOldTempFiles()
+    {
+        var threshold = DateTime.UtcNow.AddDays(-1);
+        foreach (var path in Directory.EnumerateFiles(_tempPath, "*.fb2"))
+        {
+            try
+            {
+                if (File.GetLastWriteTimeUtc(path) < threshold)
+                {
+                    File.Delete(path);
+                }
+            }
+            catch (IOException exception)
+            {
+                _logger.LogDebug(exception, "Could not clean temporary file {TempFile}.", path);
+            }
+        }
+    }
+
+    private static void EnsureParentDirectory(string path)
+    {
+        var directory = Path.GetDirectoryName(path);
+        if (!string.IsNullOrWhiteSpace(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+    }
+
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            File.Delete(path);
+        }
+        catch (IOException)
+        {
+            // Best-effort cleanup; the original error is more useful to the caller.
+        }
     }
 }

@@ -1,14 +1,13 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+using LiteDB;
 
-namespace booksBot.Core.Models
+namespace booksBot.Core.Models;
+
+public sealed class CollectionMeta
 {
-    public class CollectionMeta
-    {
-        public int Id { get; set; } // Уникальный ID для хранения метаданных
-        public long Size { get; set; } // Размер файла .inpx
-    }
+    [BsonId]
+    public int Id { get; set; } = 1;
+    public int SchemaVersion { get; set; }
+    public long SourceSize { get; set; }
+    public long SourceLastWriteUtcTicks { get; set; }
+    public int BookCount { get; set; }
 }

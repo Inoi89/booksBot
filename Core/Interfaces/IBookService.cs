@@ -1,14 +1,18 @@
-﻿using System.Collections.Generic;
 using booksBot.Core.Models;
 
-namespace booksBot.Core.Interfaces
+namespace booksBot.Core.Interfaces;
+
+public interface IBookService
 {
-    public interface IBookService
-    {
-            Task LoadCollectionAsync();
-            Task<List<BookEntry>> SearchBooksByAuthorAsync(string authorName);
-            Task<List<BookEntry>> SearchBooksByTitleAsync(string title);
-            Task<List<BookEntry>> SearchBooksBySeriesAsync(string seriesName);
-            Task<byte[]> GetBookFileAsync(string bookId);
-    }
+    Task LoadCollectionAsync(CancellationToken cancellationToken = default);
+    Task<BookSearchResult> SearchAsync(
+        string query,
+        BookSearchField field = BookSearchField.All,
+        int limit = 200,
+        CancellationToken cancellationToken = default);
+    Task<BookEntry?> GetBookAsync(string bookId, CancellationToken cancellationToken = default);
+    Task<BookEntry?> GetRandomBookAsync(CancellationToken cancellationToken = default);
+    Task<BookDownload> PrepareBookFileAsync(string bookId, CancellationToken cancellationToken = default);
+    Task<string?> GetTelegramFileIdAsync(string bookId, CancellationToken cancellationToken = default);
+    Task SaveTelegramFileIdAsync(string bookId, string fileId, CancellationToken cancellationToken = default);
 }

@@ -1,18 +1,13 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+namespace booksBot.Infrastructure.Configuration;
 
-namespace booksBot.Infrastructure.Configuration
+public sealed class AppSettings
 {
-    public class AppSettings
-    {
-        public string WebSocketUrl { get; set; }
-        public string BotToken { get; set; }
-        public string InpxCollectionPath { get; set; }
-        public string ArchivesPath { get; set; }
-        public string LiteDbPath { get; set; } // Новый путь к файлу базы данных
-    }
+    public const string SectionName = "AppSettings";
 
+    public string BotToken { get; init; } = string.Empty;
+    public string InpxCollectionPath { get; init; } = string.Empty;
+    public string ArchivesPath { get; init; } = string.Empty;
+    public string LiteDbPath { get; init; } = string.Empty;
+    public string? StateDbPath { get; init; }
+    public string? TempPath { get; init; }
 }

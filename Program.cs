@@ -1,71 +1,39 @@
-﻿using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
+using booksBot.Application.TelegramBot;
 using booksBot.Core.Interfaces;
 using booksBot.Core.Services;
 using booksBot.Infrastructure.Configuration;
-using System;
-using System.Threading.Tasks;
-using Telegram.Bot;
-using booksBot.Application.TelegramBot;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
+using Telegram.Bot;
 
-namespace booksBot
+namespace booksBot;
+
+public static class Program
 {
-    public class Program
+    public static async Task Main(string[] args)
     {
-        public static async Task Main(string[] args)
+        var builder = Host.CreateApplicationBuilder(args);
+
+        builder.Services
+            .AddOptions<AppSettings>()
+            .Bind(builder.Configuration.GetSection(AppSettings.SectionName))
+            .Validate(settings => !string.IsNullOrWhiteSpace(settings.BotToken), "Bot token is required")
+            .Validate(settings => !string.IsNullOrWhiteSpace(settings.InpxCollectionPath), "INPX path is required")
+            .Validate(settings => !string.IsNullOrWhiteSpace(settings.ArchivesPath), "Archives path is required")
+            .Validate(settings => !string.IsNullOrWhiteSpace(settings.LiteDbPath), "LiteDB path is required")
+            .ValidateOnStart();
+
+        builder.Services.AddSingleton<ITelegramBotClient>(services =>
         {
-            var host = Host.CreateDefaultBuilder(args)
-            .ConfigureServices((context, services) =>
-            {
-                // Чтение конфигурации
-                services.Configure<AppSettings>(context.Configuration.GetSection("AppSettings"));
+            var settings = services.GetRequiredService<IOptions<AppSettings>>().Value;
+            return new TelegramBotClient(settings.BotToken);
+        });
 
-                // Регистрация ITelegramBotClient как Singleton
-                services.AddSingleton<ITelegramBotClient>(provider =>
-                {
-                    var appSettings = provider.GetRequiredService<IOptions<AppSettings>>().Value;
-                    var botToken = appSettings.BotToken;
-                    return new TelegramBotClient(botToken);
-                });
+        builder.Services.AddSingleton<IBookService, BookService>();
+        builder.Services.AddSingleton<BotSessionStore>();
+        builder.Services.AddHostedService<TelegramBotService>();
 
-                // Регистрация сервисов
-                services.AddTransient<IOutputService, ConsoleOutputService>(); // Это для BookService
-                services.AddTransient<IBookService, BookService>();
-
-                // Регистрация IOutputService для TelegramBotService
-                services.AddSingleton(provider =>
-                {
-                    var botClient = provider.GetRequiredService<ITelegramBotClient>();
-                    return new TelegramOutputService(botClient);
-                });
-
-                services.AddSingleton<TelegramBotService>();
-            })
-            .Build();
-
-            // Получение необходимых сервисов
-            var bookService = host.Services.GetRequiredService<IBookService>();
-            var telegramBotService = host.Services.GetRequiredService<TelegramBotService>();
-
-            try
-            {
-                // Сначала выполняем загрузку коллекции
-                Console.WriteLine("Загрузка коллекции книг...");
-                await bookService.LoadCollectionAsync();
-
-                // Запуск Telegram бота
-                telegramBotService.Start();
-
-                Console.WriteLine("Бот запущен. Нажмите Ctrl+C для остановки.");
-
-                // Ожидание завершения работы приложения
-                await Task.Delay(-1);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Ошибка при запуске бота: {ex.Message}");
-            }
-        }
+        await builder.Build().RunAsync();
     }
 }
