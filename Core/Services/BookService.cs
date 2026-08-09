@@ -136,6 +136,7 @@ public sealed class BookService : IBookService
             var matches = candidates
                 .Where(book => tokens.All(token => GetNormalizedField(book, field).Contains(token, StringComparison.Ordinal)))
                 .OrderByDescending(book => Score(book, normalizedQuery, field))
+                .ThenByDescending(book => !preferRussian || ContainsCyrillic(book.TitleNormalized ?? string.Empty))
                 .ThenByDescending(book => !preferRussian
                     || string.Equals(book.Language, "ru", StringComparison.OrdinalIgnoreCase))
                 .ThenBy(book => book.TitleNormalized, StringComparer.Ordinal)

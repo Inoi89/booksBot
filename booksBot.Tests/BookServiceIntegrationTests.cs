@@ -86,7 +86,7 @@ public sealed class BookServiceIntegrationTests : IDisposable
             CreateRecord("Бережной,Сергей", "Аркадий Стругацкий — инструкция", string.Empty, "806584", string.Empty),
             CreateRecord("Стругацкий,Аркадий,Натанович", "Пикник на обочине", string.Empty, "806585", string.Empty),
             CreateRecord("Стругацкий,Борис:Шушпанов,Аркадий", "Журнал Если", string.Empty, "806586", string.Empty),
-            CreateRecord("Стругацкий,Аркадий,Натанович", "A Foreign Edition", string.Empty, "806587", string.Empty, "en")
+            CreateRecord("Стругацкий,Аркадий,Натанович", "A Foreign Edition", string.Empty, "806587", string.Empty)
         };
 
         using var archive = ZipFile.Open(path, ZipArchiveMode.Create);
