@@ -65,7 +65,8 @@ public sealed class BookServiceIntegrationTests : IDisposable
         var records = new[]
         {
             CreateRecord("Касс,Маркус", "Империя храмов", "Святоша", "806581", "1"),
-            CreateRecord("Касс,Маркус", "Путь защитника", "Святоша", "806582", "2")
+            CreateRecord("Касс,Маркус", "Путь защитника", "Святоша", "806582", "2"),
+            CreateRecord("Тестов,Оченьдлинный", new string('А', 2_000), string.Empty, "806583", string.Empty)
         };
 
         using var archive = ZipFile.Open(path, ZipArchiveMode.Create);
@@ -95,6 +96,7 @@ public sealed class BookServiceIntegrationTests : IDisposable
         using var archive = ZipFile.Open(path, ZipArchiveMode.Create);
         WriteBook(archive, "806581", "Империя храмов");
         WriteBook(archive, "806582", "Путь защитника");
+        WriteBook(archive, "806583", "Очень длинное название");
     }
 
     private static void WriteBook(ZipArchive archive, string id, string title)

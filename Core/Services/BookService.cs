@@ -11,7 +11,7 @@ namespace booksBot.Core.Services;
 
 public sealed class BookService : IBookService
 {
-    private const int CollectionSchemaVersion = 2;
+    private const int CollectionSchemaVersion = 3;
     private const int BatchSize = 5_000;
     private const int CandidateLimit = 2_000;
 
@@ -291,11 +291,6 @@ public sealed class BookService : IBookService
             books.InsertBulk(batch);
             bookCount += batch.Count;
         }
-
-        books.EnsureIndex(book => book.TitleNormalized);
-        books.EnsureIndex(book => book.AuthorsNormalized);
-        books.EnsureIndex(book => book.SeriesNormalized);
-        books.EnsureIndex(book => book.SearchTextNormalized);
 
         database.GetCollection<CollectionMeta>("metadata").Upsert(new CollectionMeta
         {
