@@ -1,5 +1,6 @@
 using booksBot.Application.TelegramBot;
 using booksBot.Core.Interfaces;
+using booksBot.Core.Models;
 using booksBot.Core.Services;
 using booksBot.Infrastructure.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -14,12 +15,16 @@ public static class Program
     public static async Task Main(string[] args)
     {
         var probeBookId = GetOptionValue(args, "--probe-book");
+        var probeBlockedId = GetOptionValue(args, "--probe-blocked");
         var probeQuery = GetOptionValue(args, "--probe-query");
         var probePreviewId = GetOptionValue(args, "--probe-preview");
+        var blocklistSource = GetOptionValue(args, "--build-blocklist");
         var maintenanceMode = args.Contains("--index-only", StringComparer.OrdinalIgnoreCase)
             || probeBookId is not null
+            || probeBlockedId is not null
             || probeQuery is not null
-            || probePreviewId is not null;
+            || probePreviewId is not null
+            || blocklistSource is not null;
 
         var builder = Host.CreateApplicationBuilder(args);
 
@@ -42,7 +47,23 @@ public static class Program
         {
             using var maintenanceHost = builder.Build();
             var books = maintenanceHost.Services.GetRequiredService<IBookService>();
+            var settings = maintenanceHost.Services.GetRequiredService<IOptions<AppSettings>>().Value;
             await books.LoadCollectionAsync();
+
+            if (blocklistSource is not null)
+            {
+                var defaultDirectory = Path.GetDirectoryName(settings.LiteDbPath) ?? AppContext.BaseDirectory;
+                var outputPath = GetOptionValue(args, "--blocklist-output")
+                    ?? settings.BlockedBookIdsPath
+                    ?? Path.Combine(defaultDirectory, "blocked-book-ids.txt");
+                var reportPath = GetOptionValue(args, "--blocklist-report")
+                    ?? Path.Combine(defaultDirectory, "blocked-book-report.tsv");
+                var result = await books.BuildBlocklistAsync(blocklistSource, outputPath, reportPath);
+                Console.WriteLine(
+                    $"BLOCKLIST_OK materials={result.SourceMaterialCount} candidates={result.CandidateTitleCount} "
+                    + $"catalog_matches={result.ExactCatalogMatchCount} blocked={result.BlockedBookCount} "
+                    + $"review={result.ReviewMatchCount} output={outputPath} report={reportPath}");
+            }
 
             if (probeQuery is not null)
             {
@@ -60,6 +81,24 @@ public static class Program
                     ?? throw new InvalidOperationException($"Book {probeBookId} is missing from the index.");
                 await using var download = await books.PrepareBookFileAsync(probeBookId);
                 Console.WriteLine($"BOOK_OK id={book.LibId} bytes={download.Length} title={book.Title}");
+            }
+
+            if (probeBlockedId is not null)
+            {
+                if (await books.GetBookAsync(probeBlockedId) is not null)
+                {
+                    throw new InvalidOperationException($"Book {probeBlockedId} is still visible despite the blocklist.");
+                }
+
+                try
+                {
+                    await using var _ = await books.PrepareBookFileAsync(probeBlockedId);
+                    throw new InvalidOperationException($"Book {probeBlockedId} can still be prepared despite the blocklist.");
+                }
+                catch (BookUnavailableException)
+                {
+                    Console.WriteLine($"BLOCKED_OK id={probeBlockedId}");
+                }
             }
 
             if (probePreviewId is not null)

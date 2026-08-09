@@ -22,6 +22,8 @@ public sealed class BookService : IBookService
     private readonly string _databasePath;
     private readonly string _stateDatabasePath;
     private readonly string _tempPath;
+    private readonly string _blocklistPath;
+    private readonly BlockedBookRegistry _blockedBooks;
 
     public BookService(IOptions<AppSettings> settings, ILogger<BookService> logger)
     {
@@ -36,8 +38,12 @@ public sealed class BookService : IBookService
         _tempPath = string.IsNullOrWhiteSpace(_settings.TempPath)
             ? Path.Combine(applicationDirectory, "temp")
             : _settings.TempPath;
+        _blocklistPath = string.IsNullOrWhiteSpace(_settings.BlockedBookIdsPath)
+            ? Path.Combine(applicationDirectory, "blocked-book-ids.txt")
+            : _settings.BlockedBookIdsPath;
 
         _archiveCatalog = new ArchiveCatalog(_settings.ArchivesPath);
+        _blockedBooks = new BlockedBookRegistry(_blocklistPath, _logger);
     }
 
     public async Task LoadCollectionAsync(CancellationToken cancellationToken = default)
@@ -134,6 +140,7 @@ public sealed class BookService : IBookService
 
             var preferRussian = ContainsCyrillic(normalizedQuery);
             var matches = candidates
+                .Where(book => !_blockedBooks.IsBlocked(book.LibId))
                 .Where(book => tokens.All(token => GetNormalizedField(book, field).Contains(token, StringComparison.Ordinal)))
                 .OrderByDescending(book => Score(book, normalizedQuery, field))
                 .ThenByDescending(book => !preferRussian || ContainsCyrillic(book.TitleNormalized ?? string.Empty))
@@ -151,6 +158,11 @@ public sealed class BookService : IBookService
     public Task<BookEntry?> GetBookAsync(string bookId, CancellationToken cancellationToken = default) => Task.Run(() =>
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (_blockedBooks.IsBlocked(bookId))
+        {
+            return null;
+        }
+
         using var database = OpenCollectionDatabase();
         return (BookEntry?)database.GetCollection<BookEntry>("books").FindById(bookId);
     }, cancellationToken);
@@ -166,13 +178,47 @@ public sealed class BookService : IBookService
             return null;
         }
 
-        return books.Find(Query.All(), Random.Shared.Next(count), 1).FirstOrDefault();
+        var blocked = _blockedBooks.GetSnapshot();
+        if (blocked.Count == 0)
+        {
+            return books.Find(Query.All(), Random.Shared.Next(count), 1).FirstOrDefault();
+        }
+
+        for (var attempt = 0; attempt < Math.Min(count, 100); attempt++)
+        {
+            var candidate = books.Find(Query.All(), Random.Shared.Next(count), 1).FirstOrDefault();
+            if (candidate is not null && !blocked.Contains(candidate.LibId))
+            {
+                return candidate;
+            }
+        }
+
+        return books.FindAll().FirstOrDefault(book => !blocked.Contains(book.LibId));
+    }, cancellationToken);
+
+    public Task<BookBlocklistBuildResult> BuildBlocklistAsync(
+        string sourcePath,
+        string outputPath,
+        string reportPath,
+        CancellationToken cancellationToken = default) => Task.Run(async () =>
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        using var database = OpenCollectionDatabase();
+        var books = database.GetCollection<BookEntry>("books");
+        return await BookBlocklistBuilder.BuildAsync(
+            books.FindAll(),
+            sourcePath,
+            outputPath,
+            reportPath,
+            cancellationToken);
     }, cancellationToken);
 
     public async Task<BookDownload> PrepareBookFileAsync(
         string bookId,
         CancellationToken cancellationToken = default)
     {
+        ThrowIfBlocked(bookId);
+
         if (!int.TryParse(bookId, out var numericBookId))
         {
             throw new ArgumentException($"Invalid book ID: {bookId}", nameof(bookId));
@@ -220,6 +266,8 @@ public sealed class BookService : IBookService
         string bookId,
         CancellationToken cancellationToken = default)
     {
+        ThrowIfBlocked(bookId);
+
         BookPreviewCacheEntry? cached;
         using (var database = OpenStateDatabase())
         {
@@ -273,6 +321,11 @@ public sealed class BookService : IBookService
     public Task<string?> GetTelegramFileIdAsync(string bookId, CancellationToken cancellationToken = default) => Task.Run(() =>
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (_blockedBooks.IsBlocked(bookId))
+        {
+            return null;
+        }
+
         using var database = OpenStateDatabase();
         return database.GetCollection<TelegramFileCacheEntry>("telegram_files").FindById(bookId)?.FileId;
     }, cancellationToken);
@@ -495,6 +548,14 @@ public sealed class BookService : IBookService
     private LiteDatabase OpenCollectionDatabase() => new($"Filename={_databasePath};Connection=shared");
 
     private LiteDatabase OpenStateDatabase() => new($"Filename={_stateDatabasePath};Connection=shared");
+
+    private void ThrowIfBlocked(string bookId)
+    {
+        if (_blockedBooks.IsBlocked(bookId))
+        {
+            throw new BookUnavailableException(bookId);
+        }
+    }
 
     private static string GetNormalizedFieldName(BookSearchField field) => field switch
     {

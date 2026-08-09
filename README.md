@@ -33,7 +33,34 @@ Required settings:
 Optional settings:
 
 - `AppSettings__StateDbPath` — defaults to `boxbot-state.db` beside the main database;
-- `AppSettings__TempPath` — defaults to `temp` beside the main database.
+- `AppSettings__TempPath` — defaults to `temp` beside the main database;
+- `AppSettings__BlockedBookIdsPath` — defaults to `blocked-book-ids.txt` beside the main database.
+
+## Exact-ID blocklist
+
+The blocklist contains one numeric `LibId` per line. Blank lines, comments, and
+trailing `# comments` are allowed. It is hot-reloaded within five seconds and is
+enforced for search, random books, cards, previews, cached Telegram files, and
+direct or legacy downloads. It never performs title or keyword matching at
+request time.
+
+Build a conservative list and a separate review report from a Minjust CSV or a
+numbered text export:
+
+```powershell
+dotnet booksBot.dll `
+  --build-blocklist .\rkn-current.csv `
+  --blocklist-output .\blocked-book-ids.txt `
+  --blocklist-report .\blocked-book-report.tsv
+```
+
+Only exact normalized title matches with catalog-author evidence are emitted to
+the blocklist. Ambiguous title-only matches remain in the TSV report as
+`REVIEW`. Verify an ID without exposing or extracting its FB2:
+
+```powershell
+dotnet booksBot.dll --probe-blocked 38492
+```
 
 ## Build and test
 

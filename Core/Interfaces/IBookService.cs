@@ -12,6 +12,11 @@ public interface IBookService
         CancellationToken cancellationToken = default);
     Task<BookEntry?> GetBookAsync(string bookId, CancellationToken cancellationToken = default);
     Task<BookEntry?> GetRandomBookAsync(CancellationToken cancellationToken = default);
+    Task<BookBlocklistBuildResult> BuildBlocklistAsync(
+        string sourcePath,
+        string outputPath,
+        string reportPath,
+        CancellationToken cancellationToken = default);
     Task<BookDownload> PrepareBookFileAsync(string bookId, CancellationToken cancellationToken = default);
     Task<BookPreview> GetBookPreviewAsync(string bookId, CancellationToken cancellationToken = default);
     Task SaveBookPreviewAsync(
