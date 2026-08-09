@@ -39,7 +39,7 @@ public static class BotViewFactory
             <b>Как пользоваться BookBot</b>
 
             🔎 Просто напиши запрос — поиск пройдёт по названию, автору и серии.
-            📖 Нажми на книгу, чтобы открыть карточку.
+            📖 Нажми номер книги под результатами, чтобы открыть карточку.
             ⬇️ Кнопка скачивания пришлёт FB2 прямо в чат.
 
             Команды:
@@ -78,30 +78,35 @@ public static class BotViewFactory
         {
             var book = pageBooks[index];
             var ordinal = page * PageSize + index + 1;
-            builder.Append(ordinal).Append(". <b>").Append(Escape(book.Title)).AppendLine("</b>");
-            builder.Append("   ").Append(Escape(Authors(book)));
+            builder.Append(ordinal).Append(". <b>").Append(Escape(Truncate(book.Title, 220))).AppendLine("</b>");
+            builder.Append("   👤 ").AppendLine(Escape(AuthorsSummary(book)));
             if (!string.IsNullOrWhiteSpace(book.Series))
             {
-                builder.Append(" · ").Append(Escape(book.Series));
+                builder.Append("   📚 ").Append(Escape(Truncate(book.Series, 120)));
                 if (book.SeriesOrder.HasValue)
                 {
                     builder.Append(" #").Append(book.SeriesOrder.Value);
                 }
+
+                builder.AppendLine();
             }
 
             builder.AppendLine();
         }
 
-        builder.AppendLine().Append("Страница ").Append(page + 1).Append(" из ").Append(pageCount);
+        builder.Append("Страница ").Append(page + 1).Append(" из ").Append(pageCount).Append(" · выбери номер ниже");
 
-        var rows = pageBooks
-            .Select((book, index) => new[]
+        var bookButtons = pageBooks
+            .Select((book, index) => new
             {
-                InlineKeyboardButton.WithCallbackData(
-                    $"{page * PageSize + index + 1}. {Truncate(book.Title ?? "Без названия", 42)}",
-                    $"book:{session.Id}:{book.LibId}")
+                Ordinal = page * PageSize + index + 1,
+                Book = book
             })
-            .ToList();
+            .Select(item => InlineKeyboardButton.WithCallbackData(
+                item.Ordinal.ToString(),
+                $"book:{session.Id}:{item.Book.LibId}"))
+            .ToArray();
+        var rows = new List<InlineKeyboardButton[]> { bookButtons };
 
         var navigation = new List<InlineKeyboardButton>();
         navigation.Add(page > 0
@@ -222,6 +227,26 @@ public static class BotViewFactory
         var value = string.Join("; ", (book.Authors ?? []).Select(author => author.DisplayName)
             .Where(author => !string.IsNullOrWhiteSpace(author)));
         return string.IsNullOrWhiteSpace(value) ? "Автор не указан" : value;
+    }
+
+    private static string AuthorsSummary(BookEntry book)
+    {
+        var authors = (book.Authors ?? [])
+            .Select(author => author.DisplayName)
+            .Where(author => !string.IsNullOrWhiteSpace(author))
+            .ToArray();
+        if (authors.Length == 0)
+        {
+            return "Автор не указан";
+        }
+
+        var visible = string.Join("; ", authors.Take(2));
+        if (authors.Length > 2)
+        {
+            visible += $" · ещё {authors.Length - 2}";
+        }
+
+        return Truncate(visible, 140);
     }
 
     private static string Escape(string? value) => WebUtility.HtmlEncode(value ?? string.Empty);

@@ -135,7 +135,7 @@ public sealed class BookService : IBookService
             var matches = candidates
                 .Where(book => tokens.All(token => GetNormalizedField(book, field).Contains(token, StringComparison.Ordinal)))
                 .OrderByDescending(book => Score(book, normalizedQuery, field))
-                .ThenBy(book => book.Title, StringComparer.CurrentCultureIgnoreCase)
+                .ThenBy(book => book.TitleNormalized, StringComparer.Ordinal)
                 .ToList();
 
             var visible = matches.Take(limit).ToArray();
@@ -528,17 +528,57 @@ public sealed class BookService : IBookService
 
     private static int Score(BookEntry book, string normalizedQuery, BookSearchField field)
     {
-        var score = 0;
-        var target = GetNormalizedField(book, field);
+        var tokens = normalizedQuery.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var titleScore = MatchScore(book.TitleNormalized, normalizedQuery, tokens, exact: 240, startsWith: 130, contains: 80);
+        var combinedAuthorScore = MatchScore(
+            book.AuthorsNormalized,
+            normalizedQuery,
+            tokens,
+            exact: 220,
+            startsWith: 190,
+            contains: tokens.Length == 1 ? 170 : 90);
+        var individualAuthorScore = (book.Authors ?? [])
+            .Select(author => BookTextNormalizer.Normalize(author.DisplayName))
+            .Select(author => MatchScore(author, normalizedQuery, tokens, exact: 230, startsWith: 215, contains: 205))
+            .DefaultIfEmpty(0)
+            .Max();
+        if (individualAuthorScore > 0)
+        {
+            individualAuthorScore -= Math.Min(Math.Max((book.Authors?.Count ?? 1) - 1, 0) * 8, 80);
+        }
 
-        if (target.Equals(normalizedQuery, StringComparison.Ordinal)) score += 100;
-        if (target.StartsWith(normalizedQuery, StringComparison.Ordinal)) score += 40;
-        if (string.Equals(book.TitleNormalized, normalizedQuery, StringComparison.Ordinal)) score += 80;
-        if (book.TitleNormalized?.StartsWith(normalizedQuery, StringComparison.Ordinal) == true) score += 30;
-        if (string.Equals(book.AuthorsNormalized, normalizedQuery, StringComparison.Ordinal)) score += 60;
-        if (string.Equals(book.SeriesNormalized, normalizedQuery, StringComparison.Ordinal)) score += 40;
+        var authorScore = Math.Max(combinedAuthorScore, individualAuthorScore);
+        var seriesScore = MatchScore(book.SeriesNormalized, normalizedQuery, tokens, exact: 200, startsWith: 110, contains: 70);
 
-        return score;
+        return field switch
+        {
+            BookSearchField.Title => titleScore,
+            BookSearchField.Author => authorScore,
+            BookSearchField.Series => seriesScore,
+            _ => Math.Max(titleScore, Math.Max(authorScore, seriesScore))
+        };
+    }
+
+    private static int MatchScore(
+        string? value,
+        string normalizedQuery,
+        IReadOnlyList<string> tokens,
+        int exact,
+        int startsWith,
+        int contains)
+    {
+        value ??= string.Empty;
+        if (value.Equals(normalizedQuery, StringComparison.Ordinal))
+        {
+            return exact;
+        }
+
+        if (value.StartsWith(normalizedQuery, StringComparison.Ordinal))
+        {
+            return startsWith;
+        }
+
+        return tokens.All(token => value.Contains(token, StringComparison.Ordinal)) ? contains : 0;
     }
 
     private static string BuildDownloadFileName(BookEntry? book, string bookId)

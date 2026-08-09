@@ -46,6 +46,9 @@ public sealed class BookServiceIntegrationTests : IDisposable
         var missingSeries = await service.SearchAsync("Тестов", BookSearchField.Author);
         Assert.Equal("806583", Assert.Single(missingSeries.Books).LibId);
 
+        var rankedAuthor = await service.SearchAsync("Аркадий Стругацкий");
+        Assert.Equal(new[] { "806585", "806584", "806586" }, rankedAuthor.Books.Select(book => book.LibId));
+
         await using (var download = await service.PrepareBookFileAsync("806581"))
         await using (var stream = download.OpenRead())
         using (var reader = new StreamReader(stream, Encoding.UTF8))
@@ -79,7 +82,10 @@ public sealed class BookServiceIntegrationTests : IDisposable
         {
             CreateRecord("Касс,Маркус", "Империя храмов", "Святоша", "806581", "1"),
             CreateRecord("Касс,Маркус", "Путь защитника", "Святоша", "806582", "2"),
-            CreateRecord("Тестов,Оченьдлинный", new string('А', 2_000), string.Empty, "806583", string.Empty)
+            CreateRecord("Тестов,Оченьдлинный", new string('А', 2_000), string.Empty, "806583", string.Empty),
+            CreateRecord("Бережной,Сергей", "Аркадий Стругацкий — инструкция", string.Empty, "806584", string.Empty),
+            CreateRecord("Стругацкий,Аркадий,Натанович", "Пикник на обочине", string.Empty, "806585", string.Empty),
+            CreateRecord("Стругацкий,Борис:Шушпанов,Аркадий", "Журнал Если", string.Empty, "806586", string.Empty)
         };
 
         using var archive = ZipFile.Open(path, ZipArchiveMode.Create);
