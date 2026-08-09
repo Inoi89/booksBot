@@ -47,3 +47,7 @@ Production data can be checked without starting Telegram polling:
 ```powershell
 dotnet booksBot.dll --probe-query "Касс Маркус" --probe-book 806581
 ```
+
+The production Windows scheduled task launches the bot through
+`deployment/run-boxbot.ps1`. The wrapper waits for the local SOCKS egress
+listener and keeps all runtime output in `boxbot.log`.
